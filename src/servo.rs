@@ -57,6 +57,18 @@ impl RawState {
 pub struct Bus {
     pub port: String,
     c: Sts3215Controller,
+    /// For motors in PWM mode: how far their Present_Position reading is shifted from the
+    /// position-mode frame. Measured on the hardware: in PWM mode the STS3215 (fw 3.10)
+    /// reports the raw encoder, without the homing offset (shift = +Homing_Offset).
+    pwm_shift: std::collections::HashMap<u8, i32>,
+}
+
+pub const ADDR_HOMING_OFFSET: u8 = 31;
+const SHIFT_TOLERANCE: i32 = 60; // steps; allows a loaded joint to sag a little while switching
+
+/// a - b on the 4096-step circle, in -2048..2047.
+pub fn wrap_diff(a: i32, b: i32) -> i32 {
+    (a - b + 2048).rem_euclid(4096) - 2048
 }
 
 impl Bus {
@@ -66,7 +78,7 @@ impl Bus {
             .open()
             .with_context(|| format!("open {port} (is the XLeRobot host/bridge still running? is the user in 'dialout'?)"))?;
         let c = Sts3215Controller::new().with_protocol_v1().with_serial_port(sp);
-        Ok(Self { port: port.to_string(), c })
+        Ok(Self { port: port.to_string(), c, pwm_shift: Default::default() })
     }
 
     pub fn ping(&mut self, id: u8) -> bool {
@@ -106,10 +118,15 @@ impl Bus {
         }
         Ok(rows
             .iter()
-            .map(|b| RawState {
-                pos: sm_decode(u16::from_le_bytes([b[0], b[1]]), 15),
-                speed: sm_decode(u16::from_le_bytes([b[2], b[3]]), 15),
-                load: sm_decode(u16::from_le_bytes([b[4], b[5]]), 10),
+            .zip(ids)
+            .map(|(b, id)| {
+                let raw = sm_decode(u16::from_le_bytes([b[0], b[1]]), 15);
+                let shift = self.pwm_shift.get(id).copied().unwrap_or(0);
+                RawState {
+                    pos: (raw - shift).rem_euclid(4096),
+                    speed: sm_decode(u16::from_le_bytes([b[2], b[3]]), 15),
+                    load: sm_decode(u16::from_le_bytes([b[4], b[5]]), 10),
+                }
             })
             .collect())
     }
@@ -158,31 +175,77 @@ impl Bus {
         Ok(())
     }
 
-    /// PWM mode with zero output and a PWM cap; torque on. Order: zero PWM and cap first,
-    /// so the motor never sees a stale Goal_Time when the mode flips.
+    fn homing_offset(&mut self, id: u8) -> Result<i32> {
+        let raw = self.retry("read homing offset", id, |b| b.read_u16(id, ADDR_HOMING_OFFSET))?;
+        Ok(sm_decode(raw, 11))
+    }
+
+    fn raw_present(&mut self, id: u8) -> Result<i32> {
+        let raw = self.retry("read position", id, |b| b.read_u16(id, ADDR_PRESENT_POSITION))?;
+        Ok(sm_decode(raw, 15))
+    }
+
+    /// PWM mode with zero output and a PWM cap; torque on. Zero PWM and the cap are written
+    /// before the mode flips. The position-frame shift is measured across the flip and must
+    /// match the homing offset (or zero); otherwise the motor is put back and this fails.
     pub fn enter_pwm(&mut self, ids: &[u8], torque_limit: &[u16]) -> Result<()> {
         for (&id, &lim) in ids.iter().zip(torque_limit) {
             self.retry("zero pwm", id, |b| b.write_u16(id, ADDR_GOAL_TIME, 0))?;
             self.retry("torque limit", id, |b| b.write_u16(id, ADDR_TORQUE_LIMIT, lim))?;
+            let ofs = self.homing_offset(id)?;
+            let before = self.raw_present(id)?;
             self.set_mode(id, MODE_PWM)?;
             self.set_torque(id, true)?;
+            std::thread::sleep(Duration::from_millis(5));
+            let after = self.raw_present(id)?;
+            let measured = wrap_diff(after, before);
+            let shift = [ofs, 0]
+                .into_iter()
+                .min_by_key(|c| wrap_diff(measured, *c).abs())
+                .unwrap();
+            if wrap_diff(measured, shift).abs() > SHIFT_TOLERANCE {
+                // Unknown frame: put it back where it was (position frame) and stop.
+                let _ = self.write_pwm(&[id], &[0]);
+                let _ = self.set_mode(id, MODE_POSITION);
+                let _ = self.write_u16(id, ADDR_GOAL_POSITION, before.rem_euclid(4096) as u16);
+                bail!("motor {id}: reading jumped {measured} steps entering PWM mode (homing offset {ofs}); refusing");
+            }
+            self.pwm_shift.insert(id, shift);
         }
         Ok(())
     }
 
-    /// Safe exit: zero PWM, goal = present position, position mode, torque on. The goal is
-    /// set before the mode flips, so the joint holds where it is with no free fall.
+    /// Safe exit: zero PWM, goal = present position in the position-mode frame, position
+    /// mode, torque on, goal rewritten and checked. A motor found in PWM mode without a
+    /// known shift (e.g. after a crash) is assumed to read without its homing offset.
     /// Tries every motor even if one fails.
     pub fn hold_here(&mut self, ids: &[u8], torque_limit: u16) -> Result<()> {
         let _ = self.write_pwm(ids, &vec![0; ids.len()]);
         let mut first_err = None;
         for &id in ids {
             let r = (|| -> Result<()> {
-                let pos = self.retry("read position", id, |b| b.read_u16(id, ADDR_PRESENT_POSITION))?;
-                self.retry("goal position", id, |b| b.write_u16(id, ADDR_GOAL_POSITION, pos))?;
+                let mode = self.retry("read mode", id, |b| b.read_u8(id, ADDR_OPERATING_MODE))?;
+                let shift = if mode == MODE_POSITION {
+                    0
+                } else {
+                    match self.pwm_shift.get(&id) {
+                        Some(&s) => s,
+                        None => self.homing_offset(id)?,
+                    }
+                };
+                let pos = (self.raw_present(id)? - shift).rem_euclid(4096);
+                self.retry("goal position", id, |b| b.write_u16(id, ADDR_GOAL_POSITION, pos as u16))?;
                 self.retry("torque limit", id, |b| b.write_u16(id, ADDR_TORQUE_LIMIT, torque_limit))?;
                 self.set_mode(id, MODE_POSITION)?;
-                self.set_torque(id, true)
+                self.pwm_shift.remove(&id);
+                self.set_torque(id, true)?;
+                // Re-read in the position frame and rewrite the goal, so no stale goal remains.
+                let now = self.raw_present(id)?.rem_euclid(4096);
+                if wrap_diff(now, pos).abs() > SHIFT_TOLERANCE {
+                    eprintln!("[{}] motor {id}: present {now} vs computed {pos} after hold; using present", self.port);
+                }
+                self.retry("goal position", id, |b| b.write_u16(id, ADDR_GOAL_POSITION, now as u16))?;
+                Ok(())
             })();
             if let Err(e) = r {
                 eprintln!("[{}] hold failed: {e:#}", self.port);
@@ -217,5 +280,7 @@ mod tests {
         assert_eq!(sm_decode(0x8000 | 25, 15), -25);
         // Saturates instead of spilling into the sign bit.
         assert_eq!(sm_encode(5000, 10), 1023);
+        assert_eq!(wrap_diff(10, 4090), 16);
+        assert_eq!(wrap_diff(3173, 2009), 1164);
     }
 }

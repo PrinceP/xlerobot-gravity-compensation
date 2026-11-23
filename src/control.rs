@@ -351,10 +351,10 @@ pub fn identify(bus: &mut Bus, arm: &Arm, cfg: &Config, model: &ArmModel, jname:
 
     let p_hold = pos(bus)?;
     bus.enter_pwm(&[j.id], &[max as u16])?;
-    std::thread::sleep(Duration::from_millis(300));
+    std::thread::sleep(Duration::from_millis(120));
     let p0 = pos(bus)?;
     let settle_steps = p0 - p_hold;
-    println!("{jname}: settled {settle_steps:+} steps after PWM 0; model tau {tau:+.3} N·m; lifting direction raw {dir0:+}");
+    println!("{jname}: moved {settle_steps:+} steps in 120 ms at PWM 0; model tau {tau:+.3} N·m; lifting direction raw {dir0:+}");
     if settle_steps.abs() > MAX_SLIP_STEPS {
         bus.hold_here(&[j.id], cfg.safety.hold_torque_limit)?;
         bail!("{jname} fell {settle_steps:+} steps at PWM 0 (gravity beats friction here); identify in a pose with less load");

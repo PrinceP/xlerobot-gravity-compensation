@@ -46,6 +46,7 @@ The URDF mapping (`sign`, `offset_rad`) comes from `robotics-antigravity-plugin/
 - Start with `--scale 0.5`. The gravity term fades in over `ramp_s`, and PWM is capped per joint (`max_pwm`, also written to `Torque_Limit`).
 - Faults trigger above 4 rad/s, more than 5° outside the calibrated range, above 60 °C, or below 10.5 V. A virtual wall pushes back inside 6° of each range end.
 - Modes are switched **with torque on** and the EEPROM lock stays closed. Turning torque off first, as LeRobot does, dropped the loaded elbow in the first test and the motor stopped answering. With the lock closed, the mode change lives in RAM only, so a power cycle always comes back in position mode. When holding, the goal is set to the present position *before* the mode flips back, so the joint never falls freely.
+- **In PWM mode the STS3215 (fw 3.10) reports Present_Position without its homing offset.** Measured on the left arm: the reading jumped by +1164 steps on wrist_roll, where the offset is 1163. `enter_pwm` measures that jump across the mode change, checks it against the offset register, and subtracts it from every PWM-mode reading. `hold_here` writes the goal in the position-mode frame, then rewrites it from a fresh position-mode reading, so no stale goal is left behind.
 - **A `kill -9` mid-run leaves the motors at their last PWM.** Keep the power switch within reach. `make hold` recovers.
 - The serial ports are exclusive. `make free-ports` stops the xlerobot-ops host or bridge.
 
