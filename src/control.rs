@@ -302,69 +302,112 @@ pub fn grasp(bus: &mut Bus, arm: &Arm, cfg: &Config, wait_enter: &dyn Fn(&str)) 
     }
 }
 
-/// Result of one identification run on one joint.
+/// Result of one identification sweep on one joint. Forces are in "raw-positive" PWM
+/// units: f > 0 pushes the raw position up (the motor PWM sent is pwm_sign * f).
 #[derive(Debug)]
-#[allow(dead_code)]
+#[allow(dead_code)] // fields shown via Debug
 pub struct Ident {
-    pub joint: String,
     pub deg: f64,
+    /// Model holding torque in the motor's direction (N·m).
     pub tau_model: f64,
-    pub pwm_up: Option<i32>,
-    pub pwm_down: Option<i32>,
-    pub pwm_sign: Option<f64>,
+    /// Settling drift after entering PWM 0 (steps), not counted as motion.
+    pub settle_steps: i32,
+    /// Break-away force against gravity and with gravity.
+    pub f_against: i32,
+    pub f_with: i32,
 }
 
-/// Find the PWM at which the joint starts to move, in each direction, at the current
-/// pose. Other joints hold position. Moves the joint by a few steps only.
+impl Ident {
+    pub fn hold(&self) -> f64 {
+        (self.f_against + self.f_with) as f64 / 2.0
+    }
+    pub fn friction(&self) -> f64 {
+        (self.f_against - self.f_with).abs() as f64 / 2.0
+    }
+}
+
+const MOVE_STEPS: i32 = 8; // 0.7°: counts as "started moving"
+const MAX_SLIP_STEPS: i32 = 40; // 3.5°: abort
+
+/// One continuous sweep at the present pose: ramp the force against gravity until the
+/// joint moves, then ramp back until it moves with gravity. Other joints hold position.
+/// Uses the joint's configured pwm_sign; an unloaded joint moving the wrong way is
+/// reported as a pwm_sign error.
 pub fn identify(bus: &mut Bus, arm: &Arm, cfg: &Config, model: &ArmModel, jname: &str) -> Result<Ident> {
     let ji = arm.joints.iter().position(|j| j.name == jname).ok_or_else(|| anyhow::anyhow!("no joint {jname}"))?;
     let j = &arm.joints[ji];
-    let all_ids: Vec<u8> = arm.ids().into_iter().chain([cfg.gripper.id]).collect();
-    let others: Vec<u8> = arm.ids().into_iter().filter(|&id| id != j.id).collect();
-    bus.hold_here(&others, cfg.safety.hold_torque_limit)?;
+    let ids = arm.ids();
+    bus.hold_here(&ids, cfg.safety.hold_torque_limit)?;
+    std::thread::sleep(Duration::from_millis(300));
+    let all_ids: Vec<u8> = ids.iter().copied().chain([cfg.gripper.id]).collect();
     let st = bus.read_state(&all_ids)?;
     let q = urdf_q(arm, cfg, &st);
     let tau = motor_gravity(arm, model, &q)[ji];
     let deg = j.cal.raw_to_deg(st[ji].pos);
     let max = j.max_pwm.round() as i32;
+    let dir0: i32 = if tau >= 0.0 { 1 } else { -1 }; // raw direction that lifts against gravity
+    let pos = |bus: &mut Bus| -> Result<i32> { Ok(bus.read_state(&[j.id])?[0].pos) };
+    let send = |bus: &mut Bus, f: i32| bus.write_pwm(&[j.id], &[(j.pwm_sign * f as f64).round() as i32]);
 
-    let mut result = Ident { joint: j.name.clone(), deg, tau_model: tau, pwm_up: None, pwm_down: None, pwm_sign: None };
-    for dir in [1i32, -1] {
+    let p_hold = pos(bus)?;
+    bus.enter_pwm(&[j.id], &[max as u16])?;
+    std::thread::sleep(Duration::from_millis(300));
+    let p0 = pos(bus)?;
+    let settle_steps = p0 - p_hold;
+    println!("{jname}: settled {settle_steps:+} steps after PWM 0; model tau {tau:+.3} N·m; lifting direction raw {dir0:+}");
+    if settle_steps.abs() > MAX_SLIP_STEPS {
         bus.hold_here(&[j.id], cfg.safety.hold_torque_limit)?;
-        std::thread::sleep(Duration::from_millis(300));
-        let p0 = bus.read_state(&[j.id])?[0].pos;
-        bus.enter_pwm(&[j.id], &[max as u16])?;
-        let mut pwm: i32 = 0;
-        let mut found = None;
-        while pwm.abs() <= max {
-            bus.write_pwm(&[j.id], &[pwm])?;
-            std::thread::sleep(Duration::from_millis(25));
-            let p = bus.read_state(&[j.id])?[0].pos;
-            if (p - p0).abs() >= 4 {
-                found = Some((pwm, (p - p0).signum()));
-                break;
-            }
-            pwm += 2 * dir;
-        }
-        bus.write_pwm(&[j.id], &[0])?;
-        bus.hold_here(&[j.id], cfg.safety.hold_torque_limit)?;
-        if let Some((p, moved)) = found {
-            // Direction the raw position moved under positive PWM. Only trust it when PWM
-            // caused the motion: at |pwm| < 6 the joint is slipping under gravity alone.
-            if p.abs() >= 6 {
-                let s = (moved * dir.signum()) as f64;
-                if result.pwm_sign.is_some_and(|old| old != s) {
-                    bail!("{}: direction runs disagree on pwm_sign; check the joint moves freely", j.name);
-                }
-                result.pwm_sign = Some(s);
-            } else {
-                println!("{}: slips under gravity alone at pwm {p}", j.name);
-            }
-            // Store in the "motor-positive" frame: the PWM that pushes raw up / down.
-            if moved > 0 { result.pwm_up = Some(p) } else { result.pwm_down = Some(p) }
-        }
+        bail!("{jname} fell {settle_steps:+} steps at PWM 0 (gravity beats friction here); identify in a pose with less load");
     }
-    Ok(result)
+
+    let result = (|| -> Result<(i32, i32)> {
+        // Phase 1: f from 0 toward dir0 until the joint moves MOVE_STEPS in dir0.
+        let mut f: i32 = 0;
+        let mut low: i32 = 0; // most negative displacement along dir0 (slip with gravity)
+        let f_against = loop {
+            if f.abs() > max {
+                bail!("{jname} did not lift within max_pwm {max}; raise max_pwm");
+            }
+            send(bus, f)?;
+            std::thread::sleep(Duration::from_millis(25));
+            let d = dir0 * (pos(bus)? - p0);
+            low = low.min(d);
+            if d - low >= MOVE_STEPS && f.abs() >= 6 {
+                break f;
+            }
+            if -low > MAX_SLIP_STEPS {
+                bail!(
+                    "{jname} moved {} steps opposite to the command (pwm_sign is probably {} for this joint, or gravity beats max_pwm)",
+                    -low,
+                    -j.pwm_sign
+                );
+            }
+            f += 2 * dir0;
+        };
+        // Phase 2: from f_against back toward -dir0 until it moves MOVE_STEPS with gravity.
+        let mut f = f_against;
+        let mut high = i32::MIN;
+        loop {
+            if f.abs() > max {
+                bail!("{jname} did not move back within max_pwm {max}");
+            }
+            send(bus, f)?;
+            std::thread::sleep(Duration::from_millis(25));
+            let d = dir0 * (pos(bus)? - p0);
+            high = high.max(d);
+            if high - d >= MOVE_STEPS {
+                return Ok((f_against, f));
+            }
+            if d > MAX_SLIP_STEPS {
+                bail!("{jname} kept rising past {MAX_SLIP_STEPS} steps");
+            }
+            f -= 2 * dir0;
+        }
+    })();
+    let _ = send(bus, 0);
+    bus.hold_here(&[j.id], cfg.safety.hold_torque_limit)?;
+    let (f_against, f_with) = result?;
+    Ok(Ident { deg, tau_model: tau, settle_steps, f_against, f_with })
 }
 
 /// Move the 5 arm joints in position mode to `target_deg` (LeRobot degrees), slowly.

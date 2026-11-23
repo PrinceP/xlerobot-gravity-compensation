@@ -216,20 +216,19 @@ fn main() -> Result<()> {
             let mut bus = open_bus(&cfg, &a)?;
             let r = control::identify(&mut bus, &a, &cfg, &m, joint)?;
             println!("{r:?}");
-            match (r.pwm_up, r.pwm_down, r.pwm_sign) {
-                (Some(up), Some(down), Some(s)) => {
-                    // In "raw-positive" force units: up > 0 > down.
-                    let (fu, fd) = (s * up as f64, s * down as f64);
-                    let hold = (fu + fd) / 2.0;
-                    let fric = (fu - fd) / 2.0;
-                    println!("pwm_sign = {s}   friction_pwm ≈ {fric:.0}   gravity hold ≈ {hold:.0} PWM");
-                    if r.tau_model.abs() > 0.05 {
-                        println!("pwm_per_nm ≈ {:.0}   (model tau {:.3} N·m at {:.1}°)", hold / r.tau_model, r.tau_model, r.deg);
-                    } else {
-                        println!("model gravity torque here is ~0 ({:.3} N·m): pose the joint so it carries load to fit pwm_per_nm", r.tau_model);
-                    }
+            println!(
+                "{joint} at {:.1}°: break-away against gravity {:+}, with gravity {:+} (PWM, raw-positive)",
+                r.deg, r.f_against, r.f_with
+            );
+            println!("  friction_pwm ≈ {:.0}   gravity hold ≈ {:+.0} PWM", r.friction(), r.hold());
+            if r.tau_model.abs() > 0.05 {
+                let k = r.hold() / r.tau_model;
+                println!("  pwm_per_nm ≈ {k:.0}   (model tau {:+.3} N·m)", r.tau_model);
+                if k < 0.0 {
+                    println!("  NEGATIVE: the model and the motor disagree on direction. Check sign/offset for {joint} before `run`.");
                 }
-                _ => println!("joint did not move within max_pwm in one or both directions; raise max_pwm for {joint} or check the arm is free"),
+            } else {
+                println!("  model torque ~0 here: no pwm_per_nm from this pose (friction and pwm_sign are still valid)");
             }
             println!("[{arm}] joint held in position mode.");
         }
