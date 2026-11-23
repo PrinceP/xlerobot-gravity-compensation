@@ -10,7 +10,7 @@ SCALE ?= 0.5
 DEMO_SESSION := gravcomp-demo
 STAMP := $(shell date +%Y%m%d-%H%M%S)
 
-.PHONY: help test check-model sync rust-orin build probe pose rest imp run demo record hold release identify free-ports fetch-demo
+.PHONY: help test check-model sync rust-orin build probe pose rest imp open run demo record hold release identify free-ports fetch-demo
 
 help:
 	@echo "xlerobot-gravity-compensation"
@@ -24,7 +24,8 @@ help:
 	@echo "  make pose            Move ARM=$(ARM) to the 'extended' pose and hold"
 	@echo "  make identify ARM=left JOINT=shoulder_lift   Break-away PWM test for one joint"
 	@echo "  make run [ARM=both SCALE=0.5 JOINTS=elbow_flex,...]   Gravity compensation (Ctrl+C = hold)"
-	@echo "  make imp [ARM=left SCALE=1.0 HOLD=1 POSE=extended]   + impedance goals over UDP (tools/send_goal.py)"
+	@echo "  make imp [ARM=left SCALE=1.0 HOLD=1 GRASP=1 POSE=extended DURATION=90]   + impedance goals over UDP (tools/send_goal.py)"
+	@echo "  make open ARM=left   Open the gripper (let go of the ball), gripper torque off"
 	@echo "  make demo [SCALE=..] Pose + grasp ping pong balls + gravcomp + 3-camera recording (tmux)"
 	@echo "  make rest            Fold ARM=$(ARM) to the rest pose, then torque off (keeps servos cool)"
 	@echo "  make hold | make release   Position-hold all arm motors | torque off (arm falls)"
@@ -60,7 +61,11 @@ identify:
 
 # Impedance: gravity comp + goal spring. HOLD=1 starts as a soft spring at the start pose. Goals: tools/send_goal.py
 imp:
-	$(SSHT) "mkdir -p $(ORIN_DIR)/logs && $(GC) '$(BIN) run --arm $(ARM) --scale $(SCALE) -v --listen $(if $(HOLD),--hold) $(if $(POSE),--pose $(POSE)) --log logs/$(STAMP)-imp-{arm}.csv'"
+	$(SSHT) "mkdir -p $(ORIN_DIR)/logs && $(GC) '$(BIN) run --arm $(ARM) --scale $(SCALE) -v --listen $(if $(HOLD),--hold) $(if $(GRASP),--grasp) $(if $(POSE),--pose $(POSE)) $(if $(DURATION),--duration $(DURATION)) --log logs/$(STAMP)-imp-{arm}.csv'"
+
+# Open the gripper (let go of the ball) and turn its torque off.
+open:
+	$(SSHT) "$(GC) '$(BIN) gripper --arm $(ARM) --pct 60 --release'"
 
 run:
 	$(SSHT) "mkdir -p $(ORIN_DIR)/logs && $(GC) '$(BIN) run --arm $(ARM) --scale $(SCALE) -v $(if $(JOINTS),--joints $(JOINTS)) $(if $(POSE),--pose $(POSE)) --log logs/$(STAMP)-{arm}.csv'"

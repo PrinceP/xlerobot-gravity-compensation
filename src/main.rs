@@ -99,6 +99,16 @@ enum Cmd {
         #[arg(long)]
         hold: bool,
     },
+    /// Move the gripper to a percentage of its range (e.g. 60 = open, to let go of a ball).
+    Gripper {
+        #[arg(long)]
+        arm: String,
+        #[arg(long)]
+        pct: f64,
+        /// Turn gripper torque off afterwards.
+        #[arg(long)]
+        release: bool,
+    },
     /// Put every arm motor back in position mode, holding where it is.
     Hold {
         #[arg(long, default_value = "both")]
@@ -259,6 +269,18 @@ fn main() -> Result<()> {
                 println!("  model torque ~0 here: no pwm_per_nm from this pose (friction and pwm_sign are still valid)");
             }
             println!("[{arm}] joint held in position mode.");
+        }
+
+        Cmd::Gripper { arm, pct, release } => {
+            for n in arm_names(arm) {
+                let a = cfg.arm(&n)?;
+                let mut bus = open_bus(&cfg, &a)?;
+                control::gripper_to(&mut bus, &a, &cfg, *pct)?;
+                if *release {
+                    bus.set_torque(cfg.gripper.id, false)?;
+                }
+                println!("[{n}] gripper at {pct:.0} %{}", if *release { ", torque off" } else { "" });
+            }
         }
 
         Cmd::Hold { arm } => {

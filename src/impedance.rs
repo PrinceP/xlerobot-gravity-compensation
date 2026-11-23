@@ -87,9 +87,12 @@ pub struct Impedance {
     r_cmd: UnitQuaternion<f64>,
     fresh: bool, // next cycle initialises *_cmd from the present state
     pub last_err_m: f64,
+    /// Orientation error to the commanded goal (deg); 0 without an orientation goal.
+    pub last_rot_err_deg: f64,
 }
 
 pub struct ImpOut {
+    pub goal: Vector3<f64>,
     /// Spring/damper torque per joint, URDF frame, N·m (5 joints).
     pub tau: Vec<f64>,
     pub ee: Vector3<f64>,
@@ -124,6 +127,7 @@ impl Impedance {
             r_cmd: UnitQuaternion::identity(),
             fresh: true,
             last_err_m: 0.0,
+            last_rot_err_deg: 0.0,
         })
     }
 
@@ -263,8 +267,11 @@ impl Impedance {
                     f *= c.max_force / f.norm();
                 }
                 let mut mo = -w * c.kd_rot;
+                self.last_rot_err_deg = 0.0;
                 if self.r_target.is_some() {
-                    mo += (self.r_cmd * x.rotation.inverse()).scaled_axis() * (k * c.kp_rot);
+                    let eo = (self.r_cmd * x.rotation.inverse()).scaled_axis();
+                    self.last_rot_err_deg = eo.norm().to_degrees();
+                    mo += eo * (k * c.kp_rot);
                 }
                 if mo.norm() > c.max_moment {
                     mo *= c.max_moment / mo.norm();
@@ -275,6 +282,7 @@ impl Impedance {
         }
         let tau: Vec<f64> = tau.iter().map(|t| t.clamp(-c.max_joint_tau, c.max_joint_tau)).collect();
         Ok(ImpOut {
+            goal: self.p_cmd,
             tau,
             ee: p,
             mode_name: match self.mode {

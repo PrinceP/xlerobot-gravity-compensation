@@ -121,7 +121,7 @@ impl Loop<'_> {
                 for j in &arm.joints {
                     h += &format!(",{0}_deg,{0}_radps,{0}_tau,{0}_pwm,{0}_load", j.name);
                 }
-                h += ",gripper_pct,gripper_load,cycle_ms\n";
+                h += ",gripper_pct,gripper_load,cycle_ms,imp_mode,tool_x,tool_y,tool_z,goal_x,goal_y,goal_z,pos_err_mm,rot_err_deg\n";
                 w.write_all(h.as_bytes())?;
                 Some(w)
             }
@@ -184,6 +184,7 @@ impl Loop<'_> {
             // Impedance torque (URDF frame) -> motor frame, faded in like friction.
             let mut imp_tau = vec![0.0; arm.joints.len()];
             let mut imp_status = None;
+            let mut imp_log = String::from(",,,,,,,,,");
             if let Some(imp) = self.imp.as_mut() {
                 imp.poll(arm);
                 let qd: Vec<f64> = arm.joints.iter().zip(&v_f).map(|(j, v)| j.sign * v).collect();
@@ -195,6 +196,11 @@ impl Loop<'_> {
                 let quat = imp.tool_quat(self.model, &q);
                 imp.send_state(arm, &deg, &out, quat);
                 imp_status = Some((out.mode_name, out.ee, imp.last_err_m));
+                imp_log = format!(
+                    ",{},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.2},{:.2}",
+                    out.mode_name, out.ee[0], out.ee[1], out.ee[2], out.goal[0], out.goal[1], out.goal[2],
+                    imp.last_err_m * 1e3, imp.last_rot_err_deg
+                );
             }
 
             for (k, &i) in active.iter().enumerate() {
@@ -258,15 +264,16 @@ impl Loop<'_> {
                     );
                 }
                 let g = &st[arm.joints.len()];
-                line += &format!(",{:.1},{},{:.3}\n", arm.gripper_cal.raw_to_pct(g.pos), g.load, cycle_ms);
+                line += &format!(",{:.1},{},{:.3}{imp_log}\n", arm.gripper_cal.raw_to_pct(g.pos), g.load, cycle_ms);
                 w.write_all(line.as_bytes())?;
             }
 
             n += 1;
             if opts.verbose && last_print.elapsed() > Duration::from_secs(2) {
                 let hz = n as f64 / elapsed.max(1e-9);
+                let rot = self.imp.as_ref().map_or(0.0, |i| i.last_rot_err_deg);
                 let imp_s = imp_status.map_or(String::new(), |(m, ee, err)| {
-                    format!(", imp {m} tool [{:.3} {:.3} {:.3}] m err {:.1} mm", ee[0], ee[1], ee[2], err * 1e3)
+                    format!(", imp {m} tool [{:.3} {:.3} {:.3}] m err {:.1} mm {rot:.1}°", ee[0], ee[1], ee[2], err * 1e3)
                 });
                 println!(
                     "{tag} {hz:.0} Hz, worst cycle {worst_ms:.2} ms, pwm {:?}, tau {:?}{imp_s}",
@@ -334,6 +341,24 @@ pub fn grasp(bus: &mut Bus, arm: &Arm, cfg: &Config, wait_enter: &dyn Fn(&str)) 
             bail!("{tag} gripper closed fully without feeling the ball");
         }
     }
+}
+
+/// Move the gripper slowly to `pct` of its calibrated range (position mode), e.g. to let go of a ball.
+pub fn gripper_to(bus: &mut Bus, arm: &Arm, cfg: &Config, pct: f64) -> Result<()> {
+    let id = cfg.gripper.id;
+    let cal = arm.gripper_cal;
+    let pos = bus.read_u16(id, servo::ADDR_PRESENT_POSITION)? as i32;
+    bus.write_u16(id, servo::ADDR_GOAL_POSITION, pos as u16)?;
+    bus.set_mode(id, servo::MODE_POSITION)?;
+    bus.write_u16(id, servo::ADDR_TORQUE_LIMIT, 500)?;
+    bus.set_torque(id, true)?;
+    let mut p = cal.raw_to_pct(pos);
+    while (p - pct).abs() > 0.5 {
+        p += (pct - p).clamp(-1.0, 1.0);
+        bus.write_u16(id, servo::ADDR_GOAL_POSITION, cal.pct_to_raw(p) as u16)?;
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Ok(())
 }
 
 /// Result of one identification sweep on one joint. Forces are in "raw-positive" PWM
