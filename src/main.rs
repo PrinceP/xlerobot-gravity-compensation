@@ -193,7 +193,10 @@ fn main() -> Result<()> {
             let t = x.translation.vector;
             let r = x.rotation;
             let rows: Vec<Vec<f64>> = (0..6).map(|i| (0..q.len()).map(|k| jac[(i, k)]).collect()).collect();
-            println!("{}", serde_json::json!({"link": link, "pos": [t[0], t[1], t[2]], "quat": [r.w, r.i, r.j, r.k], "jac": rows}));
+            let sh = m.root_pose().inverse() * m.joint_origin(q, 1);
+            let tb = m.root_pose().inverse() * nalgebra::Point3::from(t);
+            println!("{}", serde_json::json!({"link": link, "pos": [t[0], t[1], t[2]], "quat": [r.w, r.i, r.j, r.k], "jac": rows,
+                "tool_base": [tb[0], tb[1], tb[2]], "shoulder_base": [sh[0], sh[1], sh[2]], "reach": (tb - sh).norm()}));
         }
 
         Cmd::Probe { arm } => {

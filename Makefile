@@ -66,7 +66,7 @@ run:
 	$(SSHT) "mkdir -p $(ORIN_DIR)/logs && $(GC) '$(BIN) run --arm $(ARM) --scale $(SCALE) -v $(if $(JOINTS),--joints $(JOINTS)) $(if $(POSE),--pose $(POSE)) --log logs/$(STAMP)-{arm}.csv'"
 
 rest:
-	$(SSH) "$(GC) '$(BIN) pose --arm $(ARM) --name rest' && $(GC) '$(BIN) release --arm $(ARM) --yes'"
+	$(SSH) "$(GC) '$(BIN) pose --arm $(ARM) --name rest && $(BIN) release --arm $(ARM) --yes'"
 
 hold:
 	$(SSH) "$(GC) '$(BIN) hold --arm $(ARM)'"

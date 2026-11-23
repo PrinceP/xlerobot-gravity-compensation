@@ -108,7 +108,7 @@ The tool pose and Jacobian match Pinocchio (`getFrameJacobian`, LOCAL_WORLD_ALIG
 The SO-101 has only 5 joints, so `J^T` simply ignores the orientation component the arm can't reach. Safety limits:
 
 - Goals are rate-limited: 0.15 m/s, 1 rad/s and 45°/s.
-- Pose goals are clamped to the arm's reach, and joint goals to the calibrated range.
+- Pose goals are clamped to 0.38 m from the shoulder pivot (a straight arm reaches 0.406 m), and joint goals to the calibrated range.
 - Force (6 N), moment and per-joint spring torque are capped.
 - A goal expires after `ttl`, 0.5 s by default. With no new goal the arm goes back to plain gravity compensation and stays compliant.
 

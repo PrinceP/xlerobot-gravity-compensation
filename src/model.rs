@@ -181,6 +181,16 @@ impl ArmModel {
         self.index_of.get(name).copied().with_context(|| format!("link {name} not in arm model"))
     }
 
+    /// World position of actuated joint `k`'s origin at q.
+    pub fn joint_origin(&self, q: &[f64], k: usize) -> Point3<f64> {
+        let (_, jf) = self.forward(q);
+        self.nodes
+            .iter()
+            .zip(jf)
+            .find_map(|(n, f)| (n.q_index == Some(k)).then(|| f.map(|(p, _)| p)).flatten())
+            .expect("actuated joint index")
+    }
+
     /// World pose of the arm root link (the fixed mount), independent of q.
     pub fn root_pose(&self) -> Isometry3<f64> {
         self.nodes[0].origin

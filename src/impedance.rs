@@ -165,11 +165,8 @@ impl Impedance {
             }
             "pose" => {
                 if let Some(p) = m.pos {
-                    let mut v = Vector3::new(p[0], p[1], p[2]);
-                    if v.norm() > self.cfg.reach_m {
-                        v *= self.cfg.reach_m / v.norm();
-                    }
-                    self.p_target = v;
+                    // Reach is clamped every cycle in `torque`, around the shoulder pivot.
+                    self.p_target = Vector3::new(p[0], p[1], p[2]);
                     self.r_target = m.quat.map(|q| UnitQuaternion::from_quaternion(Quaternion::new(q[0], q[1], q[2], q[3])));
                     self.mode = Mode::Pose;
                 }
@@ -220,6 +217,13 @@ impl Impedance {
             self.r_target = Some(x.rotation);
             self.mode = Mode::Pose;
             self.fresh = true;
+        }
+        // Reach clamp around the shoulder pivot (shoulder_lift joint), not the base origin:
+        // the base origin is 0.45 m from the tool in the extended pose.
+        let shoulder = (model.root_pose().inverse() * model.joint_origin(q, 1)).coords;
+        let r = self.p_target - shoulder;
+        if r.norm() > self.cfg.reach_m {
+            self.p_target = shoulder + r * (self.cfg.reach_m / r.norm());
         }
         if self.fresh {
             self.q_cmd = q[..5].to_vec();

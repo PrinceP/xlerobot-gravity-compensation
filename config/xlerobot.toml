@@ -121,7 +121,7 @@ goal_ttl_s = 0.5            # goal expires -> gravity only
 max_goal_speed = 0.15       # m/s, commanded goal rate limit
 max_goal_rot_speed = 1.0    # rad/s
 max_joint_goal_speed_dps = 45.0
-reach_m = 0.42              # pose goals clamped to this distance from the arm base
+reach_m = 0.38              # pose goals clamped to this distance from the shoulder pivot (straight arm = 0.406)
 state_hz = 50.0             # state stream back to the goal sender
 
 # Bus 1 (/dev/ttyACM0): left arm ids 1-6 + head 7-8. Bus 2 (/dev/ttyACM1): right arm 1-6 + wheels 7-9.
