@@ -167,7 +167,10 @@ impl Loop<'_> {
 
             let q = urdf_q(arm, cfg, &st);
             let tau = motor_gravity(arm, self.model, &q);
-            let ramp = if cfg.ramp_s > 0.0 { (elapsed / cfg.ramp_s).min(1.0) } else { 1.0 };
+            // Fade-in: gravity from ramp_from to 1; friction/viscous terms from 0 to 1 (they
+            // would otherwise assist the initial sag).
+            let fade = if cfg.ramp_s > 0.0 { (elapsed / cfg.ramp_s).min(1.0) } else { 1.0 };
+            let ramp = cfg.ramp_from + (1.0 - cfg.ramp_from) * fade;
 
             for (k, &i) in active.iter().enumerate() {
                 let j = &arm.joints[i];
@@ -182,7 +185,7 @@ impl Loop<'_> {
                     bail!("{tag} {} at {deg:.1}° outside calibrated range {lo:.1}..{hi:.1}", j.name);
                 }
                 let fric = if j.friction_vel > 0.0 { j.friction_pwm * (v_f[i] / j.friction_vel).tanh() } else { 0.0 };
-                let ff = opts.scale * ramp * j.gravity_scale * j.pwm_per_nm * tau[i] + fric + j.viscous_pwm * v_f[i];
+                let ff = opts.scale * ramp * j.gravity_scale * j.pwm_per_nm * tau[i] + fade * (fric + j.viscous_pwm * v_f[i]);
                 let w = wall(j, deg, s.limit_margin_deg, s.wall_pwm_per_deg);
                 let pwm = (j.pwm_sign * (ff + w)).clamp(-j.max_pwm, j.max_pwm);
                 pwm_out[k] = pwm.round() as i32;

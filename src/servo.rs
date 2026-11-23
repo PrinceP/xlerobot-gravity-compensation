@@ -239,12 +239,23 @@ impl Bus {
                 self.set_mode(id, MODE_POSITION)?;
                 self.pwm_shift.remove(&id);
                 self.set_torque(id, true)?;
-                // Re-read in the position frame and rewrite the goal, so no stale goal remains.
-                let now = self.raw_present(id)?.rem_euclid(4096);
-                if wrap_diff(now, pos).abs() > SHIFT_TOLERANCE {
-                    eprintln!("[{}] motor {id}: present {now} vs computed {pos} after hold; using present", self.port);
+                // The reading can lag the mode change (seen on the left shoulder_pan: still in
+                // the PWM frame, 1608 steps off, right after the switch). Wait for it to agree
+                // with the computed goal. NEVER write a goal that disagrees with `pos`: that
+                // sent the left arm 71 degrees into the right arm on 2026-11-23.
+                let mut agreed = false;
+                for _ in 0..20 {
+                    let now = self.raw_present(id)?.rem_euclid(4096);
+                    if wrap_diff(now, pos).abs() <= SHIFT_TOLERANCE {
+                        self.retry("goal position", id, |b| b.write_u16(id, ADDR_GOAL_POSITION, now as u16))?;
+                        agreed = true;
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
                 }
-                self.retry("goal position", id, |b| b.write_u16(id, ADDR_GOAL_POSITION, now as u16))?;
+                if !agreed {
+                    eprintln!("[{}] motor {id}: reading never agreed with computed hold {pos}; goal left at {pos}", self.port);
+                }
                 Ok(())
             })();
             if let Err(e) = r {

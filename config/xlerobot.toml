@@ -5,6 +5,7 @@ urdf = "urdf/xlerobot.urdf"
 world_link = "base_link"   # cart frame, z up; the cart is assumed level
 rate_hz = 250.0            # bus limit is ~1.1 ms read + ~0.2 ms write per cycle
 ramp_s = 1.5               # compensation fades in over this time at start
+ramp_from = 0.8            # gravity term at t=0 (gains verified); friction terms fade in from 0
 
 [safety]
 max_speed_radps = 4.0      # any joint faster than this -> hold in place
@@ -13,7 +14,7 @@ wall_pwm_per_deg = 25.0    # wall stiffness
 max_temp_c = 60
 min_voltage_v = 10.5
 max_comm_errors = 5        # consecutive bus errors before holding
-hold_torque_limit = 1000   # Torque_Limit restored when switching back to position mode
+hold_torque_limit = 500    # Torque_Limit when holding in position mode (caps the push of any wrong goal)
 
 [gripper]                  # stays in position mode; never PWM-driven
 id = 6

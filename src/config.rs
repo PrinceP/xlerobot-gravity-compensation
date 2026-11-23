@@ -15,6 +15,9 @@ pub struct Config {
     pub world_link: String,
     pub rate_hz: f64,
     pub ramp_s: f64,
+    /// Gravity term starts at this fraction at t = 0 (0 = from nothing, for untested gains).
+    #[serde(default)]
+    pub ramp_from: f64,
     pub safety: Safety,
     pub gripper: Gripper,
     pub joints: Vec<JointCfg>,
