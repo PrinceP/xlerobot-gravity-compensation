@@ -10,7 +10,7 @@ SCALE ?= 0.5
 DEMO_SESSION := gravcomp-demo
 STAMP := $(shell date +%Y%m%d-%H%M%S)
 
-.PHONY: help test check-model sync rust-orin build probe pose run demo record hold release identify free-ports fetch-demo
+.PHONY: help test check-model sync rust-orin build probe pose rest run demo record hold release identify free-ports fetch-demo
 
 help:
 	@echo "xlerobot-gravity-compensation"
@@ -25,6 +25,7 @@ help:
 	@echo "  make identify ARM=left JOINT=shoulder_lift   Break-away PWM test for one joint"
 	@echo "  make run [ARM=both SCALE=0.5 JOINTS=elbow_flex,...]   Gravity compensation (Ctrl+C = hold)"
 	@echo "  make demo [SCALE=..] Pose + grasp ping pong balls + gravcomp + 3-camera recording (tmux)"
+	@echo "  make rest            Fold ARM=$(ARM) to the rest pose, then torque off (keeps servos cool)"
 	@echo "  make hold | make release   Position-hold all arm motors | torque off (arm falls)"
 	@echo "  make fetch-demo      Copy recorded demos from the Orin to ./demo"
 
@@ -58,6 +59,9 @@ identify:
 
 run:
 	$(SSHT) "mkdir -p $(ORIN_DIR)/logs && $(GC) '$(BIN) run --arm $(ARM) --scale $(SCALE) -v $(if $(JOINTS),--joints $(JOINTS)) $(if $(POSE),--pose $(POSE)) --log logs/$(STAMP)-{arm}.csv'"
+
+rest:
+	$(SSH) "$(GC) '$(BIN) pose --arm $(ARM) --name rest' && $(GC) '$(BIN) release --arm $(ARM) --yes'"
 
 hold:
 	$(SSH) "$(GC) '$(BIN) hold --arm $(ARM)'"

@@ -30,6 +30,8 @@ hold_torque_limit = 250    # squeeze cap while holding (of 1000)
 # Each joint sits mid-range (free both ways) and the forearm is cantilevered (real gravity load).
 [poses]
 extended = [0.0, 0.0, 0.0, 0.0, 0.0]
+# Folded rest (arms start here, torque off): measured -57/96; elbow kept inside the 6-degree margin.
+rest = [0.0, -55.0, 88.0, 0.0, 0.0]
 pose_speed_dps = 20.0
 
 # Wrist camera on each arm (no inertial in the URDF). Camera joint origin on the fixed jaw.

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use nalgebra::{Isometry3, Point3, Translation3, Unit, UnitQuaternion, Vector3};
+use nalgebra::{DMatrix, Isometry3, Point3, Translation3, Unit, UnitQuaternion, Vector3};
 
 pub const GRAVITY: Vector3<f64> = Vector3::new(0.0, 0.0, -9.81);
 
@@ -32,6 +32,7 @@ struct Node {
 pub struct ArmModel {
     nodes: Vec<Node>, // topological order: parent before child
     pub joint_names: Vec<String>,
+    index_of: HashMap<String, usize>,
 }
 
 fn iso(xyz: [f64; 3], rpy: [f64; 3]) -> Isometry3<f64> {
@@ -130,21 +131,19 @@ impl ArmModel {
             n.mass = m;
         }
 
-        Ok(Self { nodes, joint_names: joints.to_vec() })
+        Ok(Self { nodes, joint_names: joints.to_vec(), index_of })
     }
 
     pub fn total_mass(&self) -> f64 {
         self.nodes.iter().map(|n| n.mass).sum()
     }
 
-    /// Holding torque (N·m) per actuated joint, URDF sign convention.
-    pub fn gravity(&self, q: &[f64]) -> Vec<f64> {
+    /// World pose of every link, and (origin, world axis) of every actuated joint.
+    fn forward(&self, q: &[f64]) -> (Vec<Isometry3<f64>>, Vec<Option<(Point3<f64>, Vector3<f64>)>>) {
         assert_eq!(q.len(), self.joint_names.len());
         let n = self.nodes.len();
         let mut pose = vec![Isometry3::identity(); n];
-        let mut tau = vec![0.0; q.len()];
-        // Joint origin and world axis for each actuated node.
-        let mut joint_frame: Vec<Option<(Point3<f64>, Vector3<f64>)>> = vec![None; n];
+        let mut joint_frame = vec![None; n];
         for (i, node) in self.nodes.iter().enumerate() {
             let parent = node.parent.map_or(Isometry3::identity(), |p| pose[p]);
             let at_origin = parent * node.origin;
@@ -154,6 +153,13 @@ impl ArmModel {
                 joint_frame[i] = Some((at_origin * Point3::origin(), at_origin.rotation * node.axis.into_inner()));
             }
         }
+        (pose, joint_frame)
+    }
+
+    /// Holding torque (N·m) per actuated joint, URDF sign convention.
+    pub fn gravity(&self, q: &[f64]) -> Vec<f64> {
+        let (pose, joint_frame) = self.forward(q);
+        let mut tau = vec![0.0; q.len()];
         for (j, node) in self.nodes.iter().enumerate() {
             if node.mass <= 0.0 {
                 continue;
@@ -169,6 +175,42 @@ impl ArmModel {
             }
         }
         tau
+    }
+
+    fn link(&self, name: &str) -> Result<usize> {
+        self.index_of.get(name).copied().with_context(|| format!("link {name} not in arm model"))
+    }
+
+    /// World pose of the arm root link (the fixed mount), independent of q.
+    pub fn root_pose(&self) -> Isometry3<f64> {
+        self.nodes[0].origin
+    }
+
+    /// World pose of `link` at q.
+    pub fn frame_pose(&self, q: &[f64], link: &str) -> Result<Isometry3<f64>> {
+        let i = self.link(link)?;
+        Ok(self.forward(q).0[i])
+    }
+
+    /// Geometric Jacobian of `link`'s origin, world axes (Pinocchio LOCAL_WORLD_ALIGNED):
+    /// rows 0..3 linear velocity, rows 3..6 angular velocity; one column per q.
+    pub fn jacobian(&self, q: &[f64], link: &str) -> Result<(Isometry3<f64>, DMatrix<f64>)> {
+        let target = self.link(link)?;
+        let (pose, joint_frame) = self.forward(q);
+        let p_ee = pose[target] * Point3::origin();
+        let mut jac = DMatrix::zeros(6, q.len());
+        let mut cur = Some(target);
+        while let Some(i) = cur {
+            if let (Some(k), Some((p, a))) = (self.nodes[i].q_index, joint_frame[i]) {
+                let lin = a.cross(&(p_ee - p));
+                for r in 0..3 {
+                    jac[(r, k)] = lin[r];
+                    jac[(r + 3, k)] = a[r];
+                }
+            }
+            cur = self.nodes[i].parent;
+        }
+        Ok((pose[target], jac))
     }
 }
 
@@ -188,6 +230,26 @@ mod tests {
     fn loads_arm() {
         let m = arm();
         assert!((m.total_mass() - 0.801).abs() < 0.01, "mass {}", m.total_mass());
+    }
+
+    #[test]
+    fn jacobian_matches_finite_difference() {
+        let m = arm();
+        let q = [0.3, 1.2, 1.0, -0.4, 0.7, 0.2];
+        let (_, jac) = m.jacobian(&q, "Fixed_Jaw_tip").unwrap();
+        for k in 0..q.len() {
+            let h = 1e-7;
+            let mut qp = q;
+            qp[k] += h;
+            let a = m.frame_pose(&q, "Fixed_Jaw_tip").unwrap();
+            let b = m.frame_pose(&qp, "Fixed_Jaw_tip").unwrap();
+            let dv = (b.translation.vector - a.translation.vector) / h;
+            let dw = (b.rotation * a.rotation.inverse()).scaled_axis() / h;
+            for r in 0..3 {
+                assert!((dv[r] - jac[(r, k)]).abs() < 1e-5, "lin q{k} r{r}");
+                assert!((dw[r] - jac[(r + 3, k)]).abs() < 1e-5, "ang q{k} r{r}");
+            }
+        }
     }
 
     /// Finite-difference check: g(q) = dV/dq, V = potential energy.
