@@ -104,6 +104,26 @@ friction_pwm = 0.0
 viscous_pwm = 0.0
 max_pwm = 150.0
 
+# Impedance control (`run --listen` / `--hold`): a goal spring on top of gravity compensation.
+# Static friction is ~0.3-0.6 N·m per joint, so soft springs leave a dead band of ~1-2 cm.
+[impedance]
+ee_link = "Fixed_Jaw_tip"   # tool point; arm suffix added
+kp_lin = 150.0              # N/m
+kd_lin = 3.0                # N/(m/s)
+kp_rot = 0.8                # N·m/rad (only if the goal has a quat)
+kd_rot = 0.03               # N·m/(rad/s)
+kq = 4.0                    # N·m/rad, joint goals
+dq = 0.04                   # N·m/(rad/s), joint damping in every mode
+max_force = 6.0             # N
+max_moment = 0.4            # N·m
+max_joint_tau = 0.8         # N·m, per joint, spring part only
+goal_ttl_s = 0.5            # goal expires -> gravity only
+max_goal_speed = 0.15       # m/s, commanded goal rate limit
+max_goal_rot_speed = 1.0    # rad/s
+max_joint_goal_speed_dps = 45.0
+reach_m = 0.42              # pose goals clamped to this distance from the arm base
+state_hz = 50.0             # state stream back to the goal sender
+
 # Bus 1 (/dev/ttyACM0): left arm ids 1-6 + head 7-8. Bus 2 (/dev/ttyACM1): right arm 1-6 + wheels 7-9.
 # URDF: "right" arm has no suffix, "left" arm is "_2".
 [arms.left]
@@ -112,6 +132,7 @@ urdf_root = "Base_2"
 urdf_suffix = "_2"
 calib_prefix = "left_arm_"
 bus_marker_id = 0          # 0 = check that id 9 is ABSENT (head bus)
+goal_port = 5701
 
 [arms.right]
 port = "/dev/ttyACM1"
@@ -119,6 +140,7 @@ urdf_root = "Base"
 urdf_suffix = ""
 calib_prefix = "right_arm_"
 bus_marker_id = 9          # back wheel motor lives on this bus
+goal_port = 5702
 
 # Per-arm tuning from `gravcomp identify`, e.g.
 # Left arm, measured with `gravcomp identify` in the extended pose (2026-11-23). Break-away friction

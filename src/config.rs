@@ -25,6 +25,7 @@ pub struct Config {
     #[serde(default)]
     pub extra_mass: Vec<ExtraMass>,
     pub arms: HashMap<String, ArmCfg>,
+    pub impedance: Option<crate::impedance::ImpCfg>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -103,6 +104,8 @@ pub struct ArmCfg {
     pub calib_prefix: String,
     /// Motor id that exists only on this arm's bus, to catch swapped ttyACM ports.
     pub bus_marker_id: u8,
+    /// UDP port for impedance goals (`run --listen`).
+    pub goal_port: Option<u16>,
     #[serde(default)]
     pub overrides: HashMap<String, Gains>,
 }

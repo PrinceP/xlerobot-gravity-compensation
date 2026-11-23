@@ -11,6 +11,7 @@
 //!   {"mode":"joints","q_deg":[pan,lift,elbow,wrist_flex,wrist_roll]}   LeRobot degrees
 //!   {"mode":"pose","pos":[x,y,z],"quat":[w,x,y,z]}                    metres, quat optional
 //!   {"mode":"hold"}   spring to the current tool pose      {"mode":"off"}   gravity only
+//!   {"mode":"ping"}   no change; just (re)start the state stream to the sender
 //!   optional: "ttl": seconds the goal stays valid (default goal_ttl_s; 0 = until replaced)
 //!             "stiffness": 0..2, scales the spring gains
 //! A goal that expires (no new message within ttl) falls back to "off": the policy
@@ -144,6 +145,9 @@ impl Impedance {
     }
 
     fn handle(&mut self, m: Msg, arm: &Arm) {
+        if m.mode == "ping" {
+            return; // subscribe to state only
+        }
         let ttl = m.ttl.unwrap_or(self.cfg.goal_ttl_s);
         self.expires = (ttl > 0.0).then(|| Instant::now() + Duration::from_secs_f64(ttl));
         self.stiffness = m.stiffness.unwrap_or(1.0).clamp(0.0, 2.0);

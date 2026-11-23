@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cross-check gravcomp's Rust gravity model against Pinocchio (the solver NVIDIA's tutorial uses).
+"""Cross-check gravcomp's Rust gravity model, tool pose and Jacobian against Pinocchio (the solver NVIDIA's tutorial uses).
 
     pip install pin numpy
     python tools/check_gravity_pinocchio.py [--bin target/release/gravcomp] [--n 200]
@@ -31,6 +31,7 @@ def main():
 
     full = pin.buildModelFromUrdf(str(ROOT / cfg["urdf"]))
     worst = 0.0
+    worst_kin = 0.0
     for arm in ("left", "right"):
         a = cfg["arms"][arm]
         names = [j["urdf"] + a["urdf_suffix"] for j in cfg["joints"]] + [cfg["gripper"]["urdf"] + a["urdf_suffix"]]
@@ -56,8 +57,21 @@ def main():
                 check=True, capture_output=True, text=True).stdout
             g_rs = np.array(json.loads(out)["tau"])
             worst = max(worst, float(np.max(np.abs(g_rs - g_pin))))
-        print(f"{arm}: {args.n} poses, max |tau_rust - tau_pinocchio| so far = {worst:.3e} N·m")
-    ok = worst < 1e-6
+            # Tool pose and Jacobian (impedance control).
+            link = cfg["impedance"]["ee_link"] + a["urdf_suffix"]
+            fid = model.getFrameId(link)
+            pin.computeJointJacobians(model, data, q)
+            pin.updateFramePlacements(model, data)
+            J = pin.getFrameJacobian(model, data, fid, pin.LOCAL_WORLD_ALIGNED)
+            J = np.stack([J[:, model.idx_vs[model.getJointId(n)]] for n in names], axis=1)
+            k = json.loads(subprocess.run(
+                [args.bin, "--config", args.config, "kin", "--arm", arm, "--q", ",".join(f"{x:.17g}" for x in q_arm)],
+                check=True, capture_output=True, text=True).stdout)
+            worst_kin = max(worst_kin, float(np.max(np.abs(np.array(k["jac"]) - J))),
+                            float(np.max(np.abs(np.array(k["pos"]) - data.oMf[fid].translation))))
+        print(f"{arm}: {args.n} poses, max |tau_rust - tau_pinocchio| = {worst:.3e} N·m, "
+              f"max |tool pos / Jacobian diff| = {worst_kin:.3e}")
+    ok = worst < 1e-6 and worst_kin < 1e-6
     print("PASS" if ok else "FAIL")
     sys.exit(0 if ok else 1)
 

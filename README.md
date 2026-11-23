@@ -62,6 +62,7 @@ make pose ARM=left           # move to the 'extended' pose (all joints mid-range
 make identify ARM=left JOINT=elbow_flex    # break-away PWM both ways -> pwm_sign, friction_pwm, pwm_per_nm
 make run ARM=left JOINTS=elbow_flex SCALE=0.5 POSE=extended   # one joint first
 make run ARM=both SCALE=0.8 POSE=extended                     # everything
+make rest ARM=left           # fold to rest and turn torque off (servos warm up while holding)
 make demo SCALE=0.8          # pose -> hand over 2 ping pong balls -> gravcomp + 3-camera recording
 make fetch-demo              # copy demo/<stamp>/{demo.mp4,frames.csv,left.csv,right.csv} to the laptop
 ```
@@ -84,12 +85,45 @@ src/servo.rs     STS3215 PWM-mode access over rustypot (sync read/write, mode sw
 src/model.rs     URDF arm tree + gravity torque (validated against Pinocchio)
 src/control.rs   control loop, safety, gripper grasp, identification, move-to-pose
 src/config.rs    config/xlerobot.toml + LeRobot calibration JSON
-src/main.rs      CLI: probe | gravity | pose | identify | run | hold | release
+src/impedance.rs joint / pose impedance, UDP goal + state interface
+src/main.rs      CLI: probe | gravity | kin | pose | identify | run [--listen --hold] | hold | release
 config/xlerobot.toml    joints, mapping, gains, poses, safety limits
 urdf/xlerobot.urdf      MakerMods XLeRobot URDF (Apache-2.0, unmodified; LICENCE.txt)
 tools/check_gravity_pinocchio.py   Rust vs Pinocchio
 tools/record_cameras.py            3-camera demo recorder
+tools/send_goal.py                 impedance goal client (hold, nudge, pose, joints, circle)
 ```
+
+## Impedance control (goal spring on top of gravity compensation)
+
+This ports the tutorial's second example. A goal pulls the arm like a spring while gravity compensation keeps running, so you can still push the arm aside. Goals can come from anywhere, a learned policy for example, as JSON over UDP: left arm on port 5701, right arm on 5702.
+
+```
+joint goal:  tau = Kq (q_d - q) - Dq qd                                  (LeRobot degrees in, like an ACT policy's action)
+pose goal:   tau = J^T [ Kp (p_d - p) - Dp v ;  Ko log(R_d R^T) - Do w ] - Dq qd    (tool = Fixed_Jaw_tip, arm base frame)
+```
+
+The tool pose and Jacobian match Pinocchio (`getFrameJacobian`, LOCAL_WORLD_ALIGNED) to 3e-15 (`make check-model`).
+
+The SO-101 has only 5 joints, so `J^T` simply ignores the orientation component the arm can't reach. Safety limits:
+
+- Goals are rate-limited: 0.15 m/s, 1 rad/s and 45°/s.
+- Pose goals are clamped to the arm's reach, and joint goals to the calibrated range.
+- Force (6 N), moment and per-joint spring torque are capped.
+- A goal expires after `ttl`, 0.5 s by default. With no new goal the arm goes back to plain gravity compensation and stays compliant.
+
+```bash
+make imp ARM=left HOLD=1 POSE=extended                 # soft spring at the extended pose; push it and it springs back
+python tools/send_goal.py --arm left state             # tool pose, joints, mode (streams back at 50 Hz)
+python tools/send_goal.py --arm left nudge 0 0 0.02    # goal 2 cm up
+python tools/send_goal.py --arm left circle --radius 0.03 --period 4
+python tools/send_goal.py --arm left joints 0 0 0 0 0  # joint goal
+python tools/send_goal.py --arm left off               # gravity only
+```
+
+A policy streams `{"mode":"joints","q_deg":[...],"ttl":0.2}` or `{"mode":"pose","pos":[x,y,z],"quat":[w,x,y,z],"ttl":0.2}` once per step, and reads the state stream as its observation.
+
+Limitation: static friction is 0.3–0.6 N·m per joint, so a soft spring has a dead band. At `kp_lin = 150 N/m` that's about 1–2 cm. Stiffer springs, set in `[impedance]` or per goal with `"stiffness"`, tighten it but feel less compliant.
 
 ## Holoscan later
 

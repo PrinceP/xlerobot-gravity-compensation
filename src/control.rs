@@ -21,6 +21,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Result, bail};
 
 use crate::config::{Arm, Config, Joint};
+use crate::impedance::Impedance;
 use crate::model::ArmModel;
 use crate::servo::{self, Bus, RawState};
 
@@ -70,6 +71,8 @@ pub struct Loop<'a> {
     pub cfg: &'a Config,
     pub model: &'a ArmModel,
     pub bus: Bus,
+    /// Optional impedance controller (goal spring) on top of gravity compensation.
+    pub imp: Option<Impedance>,
 }
 
 impl Loop<'_> {
@@ -172,10 +175,27 @@ impl Loop<'_> {
             let fade = if cfg.ramp_s > 0.0 { (elapsed / cfg.ramp_s).min(1.0) } else { 1.0 };
             let ramp = cfg.ramp_from + (1.0 - cfg.ramp_from) * fade;
 
+            for i in 0..arm.joints.len() {
+                v_f[i] = 0.7 * v_f[i] + 0.3 * st[i].speed_radps();
+            }
+            // Impedance torque (URDF frame) -> motor frame, faded in like friction.
+            let mut imp_tau = vec![0.0; arm.joints.len()];
+            let mut imp_status = None;
+            if let Some(imp) = self.imp.as_mut() {
+                imp.poll(arm);
+                let qd: Vec<f64> = arm.joints.iter().zip(&v_f).map(|(j, v)| j.sign * v).collect();
+                let out = imp.torque(self.model, &q, &qd, period.as_secs_f64())?;
+                for (i, j) in arm.joints.iter().enumerate() {
+                    imp_tau[i] = j.sign * out.tau[i];
+                }
+                let deg: Vec<f64> = arm.joints.iter().zip(&st).map(|(j, s)| j.cal.raw_to_deg(s.pos)).collect();
+                let quat = imp.tool_quat(self.model, &q);
+                imp.send_state(arm, &deg, &out, quat);
+                imp_status = Some((out.mode_name, out.ee, imp.last_err_m));
+            }
+
             for (k, &i) in active.iter().enumerate() {
                 let j = &arm.joints[i];
-                let v = st[i].speed_radps();
-                v_f[i] = 0.7 * v_f[i] + 0.3 * v;
                 let deg = j.cal.raw_to_deg(st[i].pos);
                 let (lo, hi) = j.cal.deg_range();
                 if v_f[i].abs() > s.max_speed_radps {
@@ -185,7 +205,8 @@ impl Loop<'_> {
                     bail!("{tag} {} at {deg:.1}° outside calibrated range {lo:.1}..{hi:.1}", j.name);
                 }
                 let fric = if j.friction_vel > 0.0 { j.friction_pwm * (v_f[i] / j.friction_vel).tanh() } else { 0.0 };
-                let ff = opts.scale * ramp * j.gravity_scale * j.pwm_per_nm * tau[i] + fade * (fric + j.viscous_pwm * v_f[i]);
+                let ff = opts.scale * ramp * j.gravity_scale * j.pwm_per_nm * tau[i]
+                    + fade * (j.pwm_per_nm * imp_tau[i] + fric + j.viscous_pwm * v_f[i]);
                 let w = wall(j, deg, s.limit_margin_deg, s.wall_pwm_per_deg);
                 let pwm = (j.pwm_sign * (ff + w)).clamp(-j.max_pwm, j.max_pwm);
                 pwm_out[k] = pwm.round() as i32;
@@ -237,8 +258,11 @@ impl Loop<'_> {
             n += 1;
             if opts.verbose && last_print.elapsed() > Duration::from_secs(2) {
                 let hz = n as f64 / elapsed.max(1e-9);
+                let imp_s = imp_status.map_or(String::new(), |(m, ee, err)| {
+                    format!(", imp {m} tool [{:.3} {:.3} {:.3}] m err {:.1} mm", ee[0], ee[1], ee[2], err * 1e3)
+                });
                 println!(
-                    "{tag} {hz:.0} Hz, worst cycle {worst_ms:.2} ms, pwm {:?}, tau {:?}",
+                    "{tag} {hz:.0} Hz, worst cycle {worst_ms:.2} ms, pwm {:?}, tau {:?}{imp_s}",
                     pwm_out,
                     tau.iter().map(|t| (t * 100.0).round() / 100.0).collect::<Vec<_>>()
                 );

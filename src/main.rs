@@ -6,6 +6,7 @@
 
 mod config;
 mod control;
+mod impedance;
 mod model;
 mod servo;
 
@@ -41,6 +42,13 @@ enum Cmd {
     },
     /// Offline: model gravity torque at a URDF pose (rad, 6 values incl. jaw). Prints JSON.
     Gravity {
+        #[arg(long, default_value = "left")]
+        arm: String,
+        #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
+        q: Vec<f64>,
+    },
+    /// Offline: tool pose (world) and Jacobian at a URDF pose. Prints JSON.
+    Kin {
         #[arg(long, default_value = "left")]
         arm: String,
         #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
@@ -84,6 +92,12 @@ enum Cmd {
         log: Option<String>,
         #[arg(long, short)]
         verbose: bool,
+        /// Impedance control: accept joint/pose goals as JSON on the arm's UDP goal_port.
+        #[arg(long)]
+        listen: bool,
+        /// Impedance control: start as a soft spring holding the start pose (implies --listen).
+        #[arg(long)]
+        hold: bool,
     },
     /// Put every arm motor back in position mode, holding where it is.
     Hold {
@@ -171,6 +185,17 @@ fn main() -> Result<()> {
             println!("{}", serde_json::json!({"joints": m.joint_names, "q": q, "tau": g, "mass": m.total_mass()}));
         }
 
+        Cmd::Kin { arm, q } => {
+            let a = cfg.arm_with(arm, false)?;
+            let m = load_model(&cli.config, &cfg, &a)?;
+            let link = format!("{}{}", cfg.impedance.as_ref().map_or("Fixed_Jaw_tip", |i| i.ee_link.as_str()), a.cfg.urdf_suffix);
+            let (x, jac) = m.jacobian(q, &link)?;
+            let t = x.translation.vector;
+            let r = x.rotation;
+            let rows: Vec<Vec<f64>> = (0..6).map(|i| (0..q.len()).map(|k| jac[(i, k)]).collect()).collect();
+            println!("{}", serde_json::json!({"link": link, "pos": [t[0], t[1], t[2]], "quat": [r.w, r.i, r.j, r.k], "jac": rows}));
+        }
+
         Cmd::Probe { arm } => {
             for name in arm_names(arm) {
                 let a = cfg.arm(&name)?;
@@ -254,7 +279,7 @@ fn main() -> Result<()> {
             }
         }
 
-        Cmd::Run { arm, scale, joints, pose, grasp, duration, log, verbose } => {
+        Cmd::Run { arm, scale, joints, pose, grasp, duration, log, verbose, listen, hold } => {
             if !(0.0..=1.5).contains(scale) {
                 bail!("--scale must be in 0..1.5");
             }
@@ -307,7 +332,26 @@ fn main() -> Result<()> {
                         let log = log.as_ref().map(|l| l.replace("{arm}", &a.name));
                         sc.spawn(move || {
                             let opts = RunOpts { scale: *scale, duration: *duration, log, verbose: *verbose };
-                            let mut lp = Loop { arm: &a, cfg, model: &m, bus };
+                            let imp = if *listen || *hold {
+                                let icfg = cfg.impedance.clone().expect("[impedance] missing in config");
+                                let icfg = crate::impedance::ImpCfg { ee_link: format!("{}{}", icfg.ee_link, a.cfg.urdf_suffix), ..icfg };
+                                let addr = a.cfg.goal_port.map(|p| format!("0.0.0.0:{p}"));
+                                match crate::impedance::Impedance::new(icfg, addr.as_deref(), *hold) {
+                                    Ok(i) => {
+                                        if let Some(ad) = &addr {
+                                            println!("[{}] impedance goals on udp {ad}", a.name);
+                                        }
+                                        Some(i)
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[{}] impedance setup failed: {e:#}", a.name);
+                                        return true;
+                                    }
+                                }
+                            } else {
+                                None
+                            };
+                            let mut lp = Loop { arm: &a, cfg, model: &m, bus, imp };
                             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lp.run(&opts, &stop)));
                             stop.store(true, Ordering::SeqCst); // one arm stops -> both stop
                             let held = lp.bus.hold_here(&a.ids(), cfg.safety.hold_torque_limit);
