@@ -349,12 +349,16 @@ pub fn identify(bus: &mut Bus, arm: &Arm, cfg: &Config, model: &ArmModel, jname:
     let pos = |bus: &mut Bus| -> Result<i32> { Ok(bus.read_state(&[j.id])?[0].pos) };
     let send = |bus: &mut Bus, f: i32| bus.write_pwm(&[j.id], &[(j.pwm_sign * f as f64).round() as i32]);
 
+    // Loaded joints slip at PWM 0 (the shoulder carries the whole arm), so start at 60 %
+    // of the model's holding force; the sweep then finds the real break-away both ways.
+    let f_start = dir0 * ((0.6 * tau.abs() * j.pwm_per_nm).round() as i32).min(max / 2);
     let p_hold = pos(bus)?;
     bus.enter_pwm(&[j.id], &[max as u16])?;
+    send(bus, f_start)?;
     std::thread::sleep(Duration::from_millis(120));
     let p0 = pos(bus)?;
     let settle_steps = p0 - p_hold;
-    println!("{jname}: moved {settle_steps:+} steps in 120 ms at PWM 0; model tau {tau:+.3} N·m; lifting direction raw {dir0:+}");
+    println!("{jname}: moved {settle_steps:+} steps in 120 ms at start force {f_start:+}; model tau {tau:+.3} N·m; lifting direction raw {dir0:+}");
     if settle_steps.abs() > MAX_SLIP_STEPS {
         bus.hold_here(&[j.id], cfg.safety.hold_torque_limit)?;
         bail!("{jname} fell {settle_steps:+} steps at PWM 0 (gravity beats friction here); identify in a pose with less load");
@@ -362,7 +366,7 @@ pub fn identify(bus: &mut Bus, arm: &Arm, cfg: &Config, model: &ArmModel, jname:
 
     let result = (|| -> Result<(i32, i32)> {
         // Phase 1: f from 0 toward dir0 until the joint moves MOVE_STEPS in dir0.
-        let mut f: i32 = 0;
+        let mut f: i32 = f_start;
         let mut low: i32 = 0; // most negative displacement along dir0 (slip with gravity)
         let f_against = loop {
             if f.abs() > max {
@@ -384,8 +388,14 @@ pub fn identify(bus: &mut Bus, arm: &Arm, cfg: &Config, model: &ArmModel, jname:
             }
             f += 2 * dir0;
         };
-        // Phase 2: from f_against back toward -dir0 until it moves MOVE_STEPS with gravity.
-        let mut f = f_against;
+        // Phase 2: stop the joint (sliding friction < static, it would keep rising), then
+        // from rest ramp from 90 % of f_against toward -dir0 until it moves with gravity.
+        send(bus, f_start)?;
+        bus.hold_here(&[j.id], cfg.safety.hold_torque_limit)?;
+        std::thread::sleep(Duration::from_millis(250));
+        let p1 = pos(bus)?;
+        bus.enter_pwm(&[j.id], &[max as u16])?;
+        let mut f = f_against - dir0 * (f_against.abs() / 10).max(6);
         let mut high = i32::MIN;
         loop {
             if f.abs() > max {
@@ -393,7 +403,7 @@ pub fn identify(bus: &mut Bus, arm: &Arm, cfg: &Config, model: &ArmModel, jname:
             }
             send(bus, f)?;
             std::thread::sleep(Duration::from_millis(25));
-            let d = dir0 * (pos(bus)? - p0);
+            let d = dir0 * (pos(bus)? - p1);
             high = high.max(d);
             if high - d >= MOVE_STEPS {
                 return Ok((f_against, f));

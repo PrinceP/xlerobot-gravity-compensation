@@ -39,16 +39,16 @@ xyz = [0.0, -0.020, 0.050]
 
 # Motor joints, LeRobot order. Mapping to URDF from robotics-antigravity-plugin xlerobot_real_plan.py:
 #   q_urdf = sign * q_lerobot_rad + offset_rad
-# pwm_per_nm: STS3215 12 V stalls at ~2.9 N·m at 100 % duty -> ~340 PWM/N·m. Refine with `gravcomp identify`.
-# pwm_sign: +1 if positive PWM increases the raw position. Verify with `gravcomp identify` before `run`.
+# pwm_per_nm: measured 170 (elbow) and 166 (wrist_flex) on the left arm, 2026-11-23. The datasheet estimate was ~340.
+# pwm_sign: -1 = positive PWM DEcreases the raw position. Measured on left wrist_roll (unloaded, 2026-11-23).
 [[joints]]
 name = "shoulder_pan"
 id = 1
 urdf = "Rotation"
 sign = 1.0
 offset_rad = 0.0
-pwm_per_nm = 340.0
-pwm_sign = 1.0
+pwm_per_nm = 168.0
+pwm_sign = -1.0
 friction_pwm = 0.0
 viscous_pwm = 0.0
 max_pwm = 250.0
@@ -59,8 +59,8 @@ id = 2
 urdf = "Pitch"
 sign = -1.0
 offset_rad = 1.5707963267948966
-pwm_per_nm = 340.0
-pwm_sign = 1.0
+pwm_per_nm = 168.0
+pwm_sign = -1.0
 friction_pwm = 0.0
 viscous_pwm = 0.0
 max_pwm = 450.0
@@ -71,8 +71,8 @@ id = 3
 urdf = "Elbow"
 sign = 1.0
 offset_rad = 1.5707963267948966
-pwm_per_nm = 340.0
-pwm_sign = 1.0
+pwm_per_nm = 168.0
+pwm_sign = -1.0
 friction_pwm = 0.0
 viscous_pwm = 0.0
 max_pwm = 400.0
@@ -83,8 +83,8 @@ id = 4
 urdf = "Wrist_Pitch"
 sign = 1.0
 offset_rad = 0.0
-pwm_per_nm = 340.0
-pwm_sign = 1.0
+pwm_per_nm = 168.0
+pwm_sign = -1.0
 friction_pwm = 0.0
 viscous_pwm = 0.0
 max_pwm = 250.0
@@ -95,8 +95,8 @@ id = 5
 urdf = "Wrist_Roll"
 sign = -1.0
 offset_rad = 0.0
-pwm_per_nm = 340.0
-pwm_sign = 1.0
+pwm_per_nm = 168.0
+pwm_sign = -1.0
 friction_pwm = 0.0
 viscous_pwm = 0.0
 max_pwm = 150.0
@@ -118,6 +118,19 @@ calib_prefix = "right_arm_"
 bus_marker_id = 9          # back wheel motor lives on this bus
 
 # Per-arm tuning from `gravcomp identify`, e.g.
-# [arms.left.overrides.shoulder_lift]
-# pwm_per_nm = 310.0
-# friction_pwm = 45.0
+# Left arm, measured with `gravcomp identify` in the extended pose (2026-11-23). Break-away friction
+# (static, PWM): pan 50, shoulder_lift 94, elbow 105, wrist_flex 55, wrist_roll 45. friction_pwm starts at ~half of that:
+# Coulomb feedforward at full static friction makes a joint creep on its own.
+[arms.left.overrides.shoulder_pan]
+friction_pwm = 25.0
+[arms.left.overrides.shoulder_lift]
+pwm_per_nm = 157.0       # break-away -200 / -12 at 9.4 deg, model 0.676 N·m
+friction_pwm = 45.0
+[arms.left.overrides.elbow_flex]
+pwm_per_nm = 180.0       # 170 and 190 in two runs
+friction_pwm = 50.0
+[arms.left.overrides.wrist_flex]
+pwm_per_nm = 166.0
+friction_pwm = 25.0
+[arms.left.overrides.wrist_roll]
+friction_pwm = 20.0
