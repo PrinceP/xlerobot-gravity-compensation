@@ -349,9 +349,17 @@ pub fn identify(bus: &mut Bus, arm: &Arm, cfg: &Config, model: &ArmModel, jname:
         bus.write_pwm(&[j.id], &[0])?;
         bus.hold_here(&[j.id], cfg.safety.hold_torque_limit)?;
         if let Some((p, moved)) = found {
-            // Direction the raw position moved under positive PWM.
-            let s = (moved * dir.signum()) as f64;
-            result.pwm_sign = Some(s);
+            // Direction the raw position moved under positive PWM. Only trust it when PWM
+            // caused the motion: at |pwm| < 6 the joint is slipping under gravity alone.
+            if p.abs() >= 6 {
+                let s = (moved * dir.signum()) as f64;
+                if result.pwm_sign.is_some_and(|old| old != s) {
+                    bail!("{}: direction runs disagree on pwm_sign; check the joint moves freely", j.name);
+                }
+                result.pwm_sign = Some(s);
+            } else {
+                println!("{}: slips under gravity alone at pwm {p}", j.name);
+            }
             // Store in the "motor-positive" frame: the PWM that pushes raw up / down.
             if moved > 0 { result.pwm_up = Some(p) } else { result.pwm_down = Some(p) }
         }
