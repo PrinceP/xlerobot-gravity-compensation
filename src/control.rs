@@ -1,0 +1,397 @@
+//! Gravity-compensation loop for one arm, gripper grasp, and per-joint identification.
+//!
+//! Per cycle (one sync read + one sync write on the arm's bus):
+//!   q      <- Present_Position (5 joints + gripper)
+//!   tau    =  g(q) from the URDF model, per joint, in the motor's direction
+//!   pwm    =  pwm_sign * (scale * ramp * gravity_scale * pwm_per_nm * tau
+//!                         + friction_pwm * tanh(v / friction_vel) + viscous_pwm * v)
+//!             + virtual walls near the calibrated range ends
+//!   Goal_Time (PWM) <- clamp(pwm, ±max_pwm)
+//!
+//! Anything unexpected (speed, range, temperature, voltage, bus errors, Ctrl+C, panic)
+//! ends the loop; the caller then switches every motor back to position mode holding
+//! its present position (`Bus::hold_here`).
+
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use anyhow::{Result, bail};
+
+use crate::config::{Arm, Config, Joint};
+use crate::model::ArmModel;
+use crate::servo::{self, Bus, RawState};
+
+pub fn unix_s() -> f64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+}
+
+/// Motor raw position -> URDF joint angles (5 joints + jaw).
+pub fn urdf_q(arm: &Arm, cfg: &Config, st: &[RawState]) -> Vec<f64> {
+    let mut q: Vec<f64> = arm
+        .joints
+        .iter()
+        .zip(st)
+        .map(|(j, s)| j.sign * j.cal.raw_to_deg(s.pos).to_radians() + j.offset_rad)
+        .collect();
+    let g = st.get(arm.joints.len()).map_or(50.0, |s| arm.gripper_cal.raw_to_pct(s.pos));
+    q.push(g / 100.0 * cfg.gripper.span_rad);
+    q
+}
+
+/// Gravity torque in each motor's own direction (N·m), 5 joints.
+pub fn motor_gravity(arm: &Arm, model: &ArmModel, q: &[f64]) -> Vec<f64> {
+    let g = model.gravity(q);
+    arm.joints.iter().zip(&g).map(|(j, t)| j.sign * t).collect()
+}
+
+fn wall(j: &Joint, deg: f64, margin: f64, k: f64) -> f64 {
+    let (lo, hi) = j.cal.deg_range();
+    if deg < lo + margin {
+        k * (lo + margin - deg)
+    } else if deg > hi - margin {
+        -k * (deg - (hi - margin))
+    } else {
+        0.0
+    }
+}
+
+pub struct RunOpts {
+    pub scale: f64,
+    pub duration: Option<f64>,
+    pub log: Option<String>,
+    pub verbose: bool,
+}
+
+pub struct Loop<'a> {
+    pub arm: &'a Arm,
+    pub cfg: &'a Config,
+    pub model: &'a ArmModel,
+    pub bus: Bus,
+}
+
+impl Loop<'_> {
+    /// Joints driven in PWM mode (enabled ones). Disabled joints hold position.
+    pub fn pwm_joints(&self) -> Vec<usize> {
+        (0..self.arm.joints.len()).filter(|&i| self.arm.joints[i].enabled).collect()
+    }
+
+    /// Run until stop/fault. Motors are put in PWM mode here; the caller must call
+    /// `bus.hold_here` afterwards whatever this returns.
+    pub fn run(&mut self, opts: &RunOpts, stop: &Arc<AtomicBool>) -> Result<()> {
+        let arm = self.arm;
+        let cfg = self.cfg;
+        let s = &cfg.safety;
+        let tag = format!("[{}]", arm.name);
+        let active = self.pwm_joints();
+        if active.is_empty() {
+            bail!("{tag} no joints enabled");
+        }
+        let all_ids: Vec<u8> = arm.ids().into_iter().chain([cfg.gripper.id]).collect();
+        let pwm_ids: Vec<u8> = active.iter().map(|&i| arm.joints[i].id).collect();
+        let limits: Vec<u16> = active.iter().map(|&i| arm.joints[i].max_pwm.round() as u16).collect();
+
+        // Disabled joints: hold where they are.
+        let held: Vec<u8> = arm.joints.iter().filter(|j| !j.enabled).map(|j| j.id).collect();
+        if !held.is_empty() {
+            self.bus.hold_here(&held, s.hold_torque_limit)?;
+        }
+
+        // Pre-flight: voltage and temperature.
+        for &id in &pwm_ids {
+            let v = self.bus.read_u8(id, servo::ADDR_PRESENT_VOLTAGE)? as f64 / 10.0;
+            let t = self.bus.read_u8(id, servo::ADDR_PRESENT_TEMPERATURE)?;
+            if v < s.min_voltage_v || t > s.max_temp_c {
+                bail!("{tag} motor {id}: {v:.1} V, {t} °C outside limits");
+            }
+        }
+
+        let mut log = match &opts.log {
+            Some(p) => {
+                let mut w = BufWriter::new(File::create(p)?);
+                let mut h = String::from("t_unix,arm");
+                for j in &arm.joints {
+                    h += &format!(",{0}_deg,{0}_radps,{0}_tau,{0}_pwm,{0}_load", j.name);
+                }
+                h += ",gripper_pct,gripper_load,cycle_ms\n";
+                w.write_all(h.as_bytes())?;
+                Some(w)
+            }
+            None => None,
+        };
+
+        self.bus.enter_pwm(&pwm_ids, &limits)?;
+        println!(
+            "{tag} PWM mode on {:?}, scale {:.2}, {:.0} Hz. Ctrl+C to hold and exit.",
+            active.iter().map(|&i| arm.joints[i].name.as_str()).collect::<Vec<_>>(),
+            opts.scale,
+            cfg.rate_hz
+        );
+
+        let period = Duration::from_secs_f64(1.0 / cfg.rate_hz);
+        let t0 = Instant::now();
+        let mut next = t0;
+        let mut v_f = vec![0.0; arm.joints.len()];
+        let mut errors = 0u32;
+        let mut n = 0u64;
+        let mut worst_ms = 0.0f64;
+        let mut last_print = t0;
+        let mut rr = 0usize; // round-robin health check
+        let mut pwm_out = vec![0i32; active.len()];
+
+        while !stop.load(Ordering::Relaxed) {
+            let cycle_start = Instant::now();
+            let elapsed = (cycle_start - t0).as_secs_f64();
+            if opts.duration.is_some_and(|d| elapsed > d) {
+                println!("{tag} duration reached");
+                break;
+            }
+
+            let st = match self.bus.read_state(&all_ids) {
+                Ok(st) => {
+                    errors = 0;
+                    st
+                }
+                Err(e) => {
+                    errors += 1;
+                    if errors >= s.max_comm_errors {
+                        bail!("{tag} {errors} consecutive bus errors, last: {e:#}");
+                    }
+                    next += period;
+                    std::thread::sleep(next.saturating_duration_since(Instant::now()));
+                    continue;
+                }
+            };
+
+            let q = urdf_q(arm, cfg, &st);
+            let tau = motor_gravity(arm, self.model, &q);
+            let ramp = if cfg.ramp_s > 0.0 { (elapsed / cfg.ramp_s).min(1.0) } else { 1.0 };
+
+            for (k, &i) in active.iter().enumerate() {
+                let j = &arm.joints[i];
+                let v = st[i].speed_radps();
+                v_f[i] = 0.7 * v_f[i] + 0.3 * v;
+                let deg = j.cal.raw_to_deg(st[i].pos);
+                let (lo, hi) = j.cal.deg_range();
+                if v_f[i].abs() > s.max_speed_radps {
+                    bail!("{tag} {} moving {:.1} rad/s (limit {:.1})", j.name, v_f[i], s.max_speed_radps);
+                }
+                if deg < lo - 5.0 || deg > hi + 5.0 {
+                    bail!("{tag} {} at {deg:.1}° outside calibrated range {lo:.1}..{hi:.1}", j.name);
+                }
+                let fric = if j.friction_vel > 0.0 { j.friction_pwm * (v_f[i] / j.friction_vel).tanh() } else { 0.0 };
+                let ff = opts.scale * ramp * j.gravity_scale * j.pwm_per_nm * tau[i] + fric + j.viscous_pwm * v_f[i];
+                let w = wall(j, deg, s.limit_margin_deg, s.wall_pwm_per_deg);
+                let pwm = (j.pwm_sign * (ff + w)).clamp(-j.max_pwm, j.max_pwm);
+                pwm_out[k] = pwm.round() as i32;
+            }
+
+            if let Err(e) = self.bus.write_pwm(&pwm_ids, &pwm_out) {
+                errors += 1;
+                if errors >= s.max_comm_errors {
+                    bail!("{tag} PWM write failing: {e:#}");
+                }
+            }
+
+            // One health read per cycle, round-robin over the PWM motors.
+            if n % 25 == 0 {
+                let id = pwm_ids[rr % pwm_ids.len()];
+                rr += 1;
+                if let Ok(t) = self.bus.read_u8(id, servo::ADDR_PRESENT_TEMPERATURE) {
+                    if t > s.max_temp_c {
+                        bail!("{tag} motor {id} at {t} °C");
+                    }
+                }
+                if let Ok(v) = self.bus.read_u8(id, servo::ADDR_PRESENT_VOLTAGE) {
+                    if (v as f64 / 10.0) < s.min_voltage_v {
+                        bail!("{tag} motor {id} supply {:.1} V", v as f64 / 10.0);
+                    }
+                }
+            }
+
+            let cycle_ms = cycle_start.elapsed().as_secs_f64() * 1e3;
+            worst_ms = worst_ms.max(cycle_ms);
+            if let Some(w) = log.as_mut() {
+                let mut line = format!("{:.4},{}", unix_s(), arm.name);
+                for (i, j) in arm.joints.iter().enumerate() {
+                    let p = active.iter().position(|&a| a == i).map_or(0, |k| pwm_out[k]);
+                    line += &format!(
+                        ",{:.2},{:.3},{:.4},{},{}",
+                        j.cal.raw_to_deg(st[i].pos),
+                        v_f[i],
+                        tau[i],
+                        p,
+                        st[i].load
+                    );
+                }
+                let g = &st[arm.joints.len()];
+                line += &format!(",{:.1},{},{:.3}\n", arm.gripper_cal.raw_to_pct(g.pos), g.load, cycle_ms);
+                w.write_all(line.as_bytes())?;
+            }
+
+            n += 1;
+            if opts.verbose && last_print.elapsed() > Duration::from_secs(2) {
+                let hz = n as f64 / elapsed.max(1e-9);
+                println!(
+                    "{tag} {hz:.0} Hz, worst cycle {worst_ms:.2} ms, pwm {:?}, tau {:?}",
+                    pwm_out,
+                    tau.iter().map(|t| (t * 100.0).round() / 100.0).collect::<Vec<_>>()
+                );
+                worst_ms = 0.0;
+                last_print = Instant::now();
+            }
+
+            next += period;
+            let now = Instant::now();
+            if next > now {
+                std::thread::sleep(next - now);
+            } else {
+                next = now; // overrun: don't try to catch up
+            }
+        }
+        if let Some(mut w) = log {
+            w.flush()?;
+        }
+        Ok(())
+    }
+}
+
+/// Open the gripper, wait for the user, close until the load says "holding".
+/// Gripper stays in position mode the whole time.
+pub fn grasp(bus: &mut Bus, arm: &Arm, cfg: &Config, wait_enter: &dyn Fn(&str)) -> Result<()> {
+    let g = &cfg.gripper;
+    let cal = arm.gripper_cal;
+    let id = g.id;
+    let tag = format!("[{}]", arm.name);
+    let pos = bus.read_u16(id, servo::ADDR_PRESENT_POSITION)? as i32;
+    bus.set_mode(id, servo::MODE_POSITION)?;
+    bus.write_u16(id, servo::ADDR_GOAL_POSITION, pos as u16)?;
+    bus.write_u16(id, servo::ADDR_TORQUE_LIMIT, 500)?;
+    bus.set_torque(id, true)?;
+
+    // Open slowly.
+    let mut pct = cal.raw_to_pct(pos);
+    while (pct - g.open_pct).abs() > 0.5 {
+        pct += (g.open_pct - pct).clamp(-1.0, 1.0);
+        bus.write_u16(id, servo::ADDR_GOAL_POSITION, cal.pct_to_raw(pct) as u16)?;
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    wait_enter(&format!("{tag} Put the ping pong ball between the {} jaws and keep holding it, then press Enter", arm.name));
+
+    // Close until load rises.
+    bus.write_u16(id, servo::ADDR_TORQUE_LIMIT, g.hold_torque_limit.max(300))?;
+    loop {
+        pct -= g.close_step_pct;
+        bus.write_u16(id, servo::ADDR_GOAL_POSITION, cal.pct_to_raw(pct) as u16)?;
+        std::thread::sleep(Duration::from_millis(20));
+        let st = bus.read_state(&[id])?;
+        if st[0].load.abs() >= g.grasp_load {
+            // Hold at the contact point, squeeze capped by the torque limit.
+            let hold = cal.raw_to_pct(st[0].pos) - 1.5;
+            bus.write_u16(id, servo::ADDR_GOAL_POSITION, cal.pct_to_raw(hold) as u16)?;
+            bus.write_u16(id, servo::ADDR_TORQUE_LIMIT, g.hold_torque_limit)?;
+            println!("{tag} grasped at {:.1} % (load {})", cal.raw_to_pct(st[0].pos), st[0].load);
+            return Ok(());
+        }
+        if pct <= 0.0 {
+            bus.write_u16(id, servo::ADDR_TORQUE_LIMIT, g.hold_torque_limit)?;
+            bail!("{tag} gripper closed fully without feeling the ball");
+        }
+    }
+}
+
+/// Result of one identification run on one joint.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct Ident {
+    pub joint: String,
+    pub deg: f64,
+    pub tau_model: f64,
+    pub pwm_up: Option<i32>,
+    pub pwm_down: Option<i32>,
+    pub pwm_sign: Option<f64>,
+}
+
+/// Find the PWM at which the joint starts to move, in each direction, at the current
+/// pose. Other joints hold position. Moves the joint by a few steps only.
+pub fn identify(bus: &mut Bus, arm: &Arm, cfg: &Config, model: &ArmModel, jname: &str) -> Result<Ident> {
+    let ji = arm.joints.iter().position(|j| j.name == jname).ok_or_else(|| anyhow::anyhow!("no joint {jname}"))?;
+    let j = &arm.joints[ji];
+    let all_ids: Vec<u8> = arm.ids().into_iter().chain([cfg.gripper.id]).collect();
+    let others: Vec<u8> = arm.ids().into_iter().filter(|&id| id != j.id).collect();
+    bus.hold_here(&others, cfg.safety.hold_torque_limit)?;
+    let st = bus.read_state(&all_ids)?;
+    let q = urdf_q(arm, cfg, &st);
+    let tau = motor_gravity(arm, model, &q)[ji];
+    let deg = j.cal.raw_to_deg(st[ji].pos);
+    let max = j.max_pwm.round() as i32;
+
+    let mut result = Ident { joint: j.name.clone(), deg, tau_model: tau, pwm_up: None, pwm_down: None, pwm_sign: None };
+    for dir in [1i32, -1] {
+        bus.hold_here(&[j.id], cfg.safety.hold_torque_limit)?;
+        std::thread::sleep(Duration::from_millis(300));
+        let p0 = bus.read_state(&[j.id])?[0].pos;
+        bus.enter_pwm(&[j.id], &[max as u16])?;
+        let mut pwm: i32 = 0;
+        let mut found = None;
+        while pwm.abs() <= max {
+            bus.write_pwm(&[j.id], &[pwm])?;
+            std::thread::sleep(Duration::from_millis(25));
+            let p = bus.read_state(&[j.id])?[0].pos;
+            if (p - p0).abs() >= 4 {
+                found = Some((pwm, (p - p0).signum()));
+                break;
+            }
+            pwm += 2 * dir;
+        }
+        bus.write_pwm(&[j.id], &[0])?;
+        bus.hold_here(&[j.id], cfg.safety.hold_torque_limit)?;
+        if let Some((p, moved)) = found {
+            // Direction the raw position moved under positive PWM.
+            let s = (moved * dir.signum()) as f64;
+            result.pwm_sign = Some(s);
+            // Store in the "motor-positive" frame: the PWM that pushes raw up / down.
+            if moved > 0 { result.pwm_up = Some(p) } else { result.pwm_down = Some(p) }
+        }
+    }
+    Ok(result)
+}
+
+/// Move the 5 arm joints in position mode to `target_deg` (LeRobot degrees), slowly.
+/// Leaves them holding the pose in position mode. The gripper is not touched.
+pub fn move_to_pose(bus: &mut Bus, arm: &Arm, cfg: &Config, target_deg: &[f64], speed_dps: f64) -> Result<()> {
+    let ids = arm.ids();
+    if target_deg.len() != ids.len() {
+        bail!("pose needs {} joint angles, got {}", ids.len(), target_deg.len());
+    }
+    for (j, &t) in arm.joints.iter().zip(target_deg) {
+        let (lo, hi) = j.cal.deg_range();
+        let m = cfg.safety.limit_margin_deg;
+        if t < lo + m || t > hi - m {
+            bail!("[{}] pose {} = {t:.1}° is outside {:.1}..{:.1}", arm.name, j.name, lo + m, hi - m);
+        }
+    }
+    bus.hold_here(&ids, 600)?; // moderate torque while moving
+    let st = bus.read_state(&ids)?;
+    let start: Vec<f64> = arm.joints.iter().zip(&st).map(|(j, s)| j.cal.raw_to_deg(s.pos)).collect();
+    let dist = start.iter().zip(target_deg).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
+    let steps = ((dist / speed_dps) / 0.02).ceil().max(1.0) as usize;
+    println!("[{}] moving to pose ({dist:.0}° max travel, {:.1} s)", arm.name, steps as f64 * 0.02);
+    for k in 1..=steps {
+        let a = k as f64 / steps as f64;
+        let a = a * a * (3.0 - 2.0 * a); // smoothstep
+        for ((j, s), t) in arm.joints.iter().zip(&start).zip(target_deg) {
+            let deg = s + (t - s) * a;
+            let raw = (j.cal.mid() + deg * 4095.0 / 360.0).round() as u16;
+            bus.write_u16(j.id, servo::ADDR_GOAL_POSITION, raw)?;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(400));
+    for &id in &ids {
+        bus.write_u16(id, servo::ADDR_TORQUE_LIMIT, cfg.safety.hold_torque_limit)?;
+    }
+    Ok(())
+}

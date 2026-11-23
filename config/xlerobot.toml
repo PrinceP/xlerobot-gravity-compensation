@@ -1,0 +1,123 @@
+# XLeRobot gravity compensation settings. Paths resolve on the machine that runs `gravcomp` (the Orin).
+
+calibration = "~/.cache/huggingface/lerobot/calibration/robots/xlerobot/xlerobot_3wheel.json"
+urdf = "urdf/xlerobot.urdf"
+world_link = "base_link"   # cart frame, z up; the cart is assumed level
+rate_hz = 250.0            # bus limit is ~1.1 ms read + ~0.2 ms write per cycle
+ramp_s = 1.5               # compensation fades in over this time at start
+
+[safety]
+max_speed_radps = 4.0      # any joint faster than this -> hold in place
+limit_margin_deg = 6.0     # virtual wall this far inside the calibrated range
+wall_pwm_per_deg = 25.0    # wall stiffness
+max_temp_c = 60
+min_voltage_v = 10.5
+max_comm_errors = 5        # consecutive bus errors before holding
+hold_torque_limit = 1000   # Torque_Limit restored when switching back to position mode
+
+[gripper]                  # stays in position mode; never PWM-driven
+id = 6
+urdf = "Jaw"
+span_rad = 2.25            # jaw angle at 100 % of the calibrated range
+open_pct = 60.0            # opening for handing over a 40 mm ping pong ball
+close_step_pct = 0.4       # per 20 ms while closing
+grasp_load = 180           # |Present_Load| (0.1 %) that counts as "holding"; balls crush easily
+hold_torque_limit = 250    # squeeze cap while holding (of 1000)
+
+# Named start poses, LeRobot degrees: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll].
+# 0 everywhere = calibration middle: upper arm up, forearm forward horizontal, wrist straight.
+# Each joint sits mid-range (free both ways) and the forearm is cantilevered (real gravity load).
+[poses]
+extended = [0.0, 0.0, 0.0, 0.0, 0.0]
+pose_speed_dps = 20.0
+
+# Wrist camera on each arm (no inertial in the URDF). Camera joint origin on the fixed jaw.
+[[extra_mass]]
+link = "Fixed_Jaw"
+mass_kg = 0.025
+xyz = [0.0, -0.020, 0.050]
+
+# Motor joints, LeRobot order. Mapping to URDF from robotics-antigravity-plugin xlerobot_real_plan.py:
+#   q_urdf = sign * q_lerobot_rad + offset_rad
+# pwm_per_nm: STS3215 12 V stalls at ~2.9 N·m at 100 % duty -> ~340 PWM/N·m. Refine with `gravcomp identify`.
+# pwm_sign: +1 if positive PWM increases the raw position. Verify with `gravcomp identify` before `run`.
+[[joints]]
+name = "shoulder_pan"
+id = 1
+urdf = "Rotation"
+sign = 1.0
+offset_rad = 0.0
+pwm_per_nm = 340.0
+pwm_sign = 1.0
+friction_pwm = 0.0
+viscous_pwm = 0.0
+max_pwm = 250.0
+
+[[joints]]
+name = "shoulder_lift"
+id = 2
+urdf = "Pitch"
+sign = -1.0
+offset_rad = 1.5707963267948966
+pwm_per_nm = 340.0
+pwm_sign = 1.0
+friction_pwm = 0.0
+viscous_pwm = 0.0
+max_pwm = 450.0
+
+[[joints]]
+name = "elbow_flex"
+id = 3
+urdf = "Elbow"
+sign = 1.0
+offset_rad = 1.5707963267948966
+pwm_per_nm = 340.0
+pwm_sign = 1.0
+friction_pwm = 0.0
+viscous_pwm = 0.0
+max_pwm = 400.0
+
+[[joints]]
+name = "wrist_flex"
+id = 4
+urdf = "Wrist_Pitch"
+sign = 1.0
+offset_rad = 0.0
+pwm_per_nm = 340.0
+pwm_sign = 1.0
+friction_pwm = 0.0
+viscous_pwm = 0.0
+max_pwm = 250.0
+
+[[joints]]
+name = "wrist_roll"
+id = 5
+urdf = "Wrist_Roll"
+sign = -1.0
+offset_rad = 0.0
+pwm_per_nm = 340.0
+pwm_sign = 1.0
+friction_pwm = 0.0
+viscous_pwm = 0.0
+max_pwm = 150.0
+
+# Bus 1 (/dev/ttyACM0): left arm ids 1-6 + head 7-8. Bus 2 (/dev/ttyACM1): right arm 1-6 + wheels 7-9.
+# URDF: "right" arm has no suffix, "left" arm is "_2".
+[arms.left]
+port = "/dev/ttyACM0"
+urdf_root = "Base_2"
+urdf_suffix = "_2"
+calib_prefix = "left_arm_"
+bus_marker_id = 0          # 0 = check that id 9 is ABSENT (head bus)
+
+[arms.right]
+port = "/dev/ttyACM1"
+urdf_root = "Base"
+urdf_suffix = ""
+calib_prefix = "right_arm_"
+bus_marker_id = 9          # back wheel motor lives on this bus
+
+# Per-arm tuning from `gravcomp identify`, e.g.
+# [arms.left.overrides.shoulder_lift]
+# pwm_per_nm = 310.0
+# friction_pwm = 45.0
