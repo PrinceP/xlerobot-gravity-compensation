@@ -45,7 +45,8 @@ The URDF mapping (`sign`, `offset_rad`) comes from `robotics-antigravity-plugin/
 - On exit or fault, each motor goes back to **position mode holding where it is**, so the arm doesn't drop. `gravcomp release --yes` is the only command that turns torque off.
 - Start with `--scale 0.5`. The gravity term fades in over `ramp_s`, and PWM is capped per joint (`max_pwm`, also written to `Torque_Limit`).
 - Faults trigger above 4 rad/s, more than 5° outside the calibrated range, above 60 °C, or below 10.5 V. A virtual wall pushes back inside 6° of each range end.
-- **A `kill -9` or a power loss mid-run leaves the motors at their last PWM.** Keep the power switch within reach. `make hold` recovers. The mode is written with the EEPROM lock open (the same convention LeRobot uses), so a motor could still be in PWM mode after a power cycle. LeRobot's `configure()` sets position mode again on its next connect.
+- Modes are switched **with torque on** and the EEPROM lock stays closed. Turning torque off first, as LeRobot does, dropped the loaded elbow in the first test and the motor stopped answering. With the lock closed, the mode change lives in RAM only, so a power cycle always comes back in position mode. When holding, the goal is set to the present position *before* the mode flips back, so the joint never falls freely.
+- **A `kill -9` mid-run leaves the motors at their last PWM.** Keep the power switch within reach. `make hold` recovers.
 - The serial ports are exclusive. `make free-ports` stops the xlerobot-ops host or bridge.
 
 ## Usage (from the laptop)

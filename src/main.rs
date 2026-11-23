@@ -316,10 +316,12 @@ fn main() -> Result<()> {
                                 Ok(r) => r,
                                 Err(_) => Err(anyhow::anyhow!("[{}] control loop panicked", a.name)),
                             };
-                            match (&res, &held) {
-                                (_, Err(e)) => eprintln!("[{}] HOLD FAILED: {e:#}. Run `gravcomp hold` or cut power.", a.name),
-                                (Ok(()), Ok(())) => println!("[{}] stopped, holding position", a.name),
-                                (Err(e), Ok(())) => eprintln!("[{}] fault: {e:#}. Holding position.", a.name),
+                            if let Err(e) = &res {
+                                eprintln!("[{}] fault: {e:#}", a.name);
+                            }
+                            match &held {
+                                Err(e) => eprintln!("[{}] HOLD FAILED: {e:#}. Run `make hold` or cut power.", a.name),
+                                Ok(()) => println!("[{}] stopped, holding position", a.name),
                             }
                             res.is_err() || held.is_err()
                         })

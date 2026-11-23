@@ -17,7 +17,6 @@ pub const ADDR_TORQUE_ENABLE: u8 = 40;
 pub const ADDR_GOAL_POSITION: u8 = 42;
 pub const ADDR_GOAL_TIME: u8 = 44; // PWM command in PWM mode
 pub const ADDR_TORQUE_LIMIT: u8 = 48; // RAM, caps the output in every mode
-pub const ADDR_LOCK: u8 = 55;
 pub const ADDR_PRESENT_POSITION: u8 = 56; // 56 pos(2) 58 speed(2) 60 load(2)
 pub const ADDR_PRESENT_VOLTAGE: u8 = 62;
 pub const ADDR_PRESENT_TEMPERATURE: u8 = 63;
@@ -127,61 +126,78 @@ impl Bus {
     }
 
     /// Torque on closes the EEPROM lock, torque off opens it (LeRobot/rustypot convention).
-    pub fn set_torque(&mut self, id: u8, on: bool) -> Result<()> {
-        self.write_u8(id, ADDR_TORQUE_ENABLE, on as u8)?;
-        self.write_u8(id, ADDR_LOCK, on as u8)
+    /// Retry a bus operation a few times; a motor can miss one packet.
+    fn retry<T>(&mut self, what: &str, id: u8, mut f: impl FnMut(&mut Self) -> Result<T>) -> Result<T> {
+        let mut last = None;
+        for _ in 0..4 {
+            match f(self) {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    last = Some(e);
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
+        Err(last.unwrap()).with_context(|| format!("motor {id}: {what}"))
     }
 
-    /// Change operating mode: torque off, write mode, read it back. Leaves torque OFF.
+    /// Torque on/off. The EEPROM lock is never touched, so mode changes stay in RAM and
+    /// a power cycle always brings the motor back in its saved (position) mode.
+    pub fn set_torque(&mut self, id: u8, on: bool) -> Result<()> {
+        self.retry(if on { "torque on" } else { "torque off" }, id, |b| b.write_u8(id, ADDR_TORQUE_ENABLE, on as u8))
+    }
+
+    /// Change operating mode WITHOUT turning torque off (a loaded joint would fall), then
+    /// read it back.
     pub fn set_mode(&mut self, id: u8, mode: u8) -> Result<()> {
-        self.set_torque(id, false)?;
-        self.write_u8(id, ADDR_OPERATING_MODE, mode)?;
-        let back = self.read_u8(id, ADDR_OPERATING_MODE)?;
+        self.retry("write mode", id, |b| b.write_u8(id, ADDR_OPERATING_MODE, mode))?;
+        let back = self.retry("read mode", id, |b| b.read_u8(id, ADDR_OPERATING_MODE))?;
         if back != mode {
-            bail!("motor {id}: wrote operating mode {mode}, reads back {back}");
+            bail!("motor {id}: wrote operating mode {mode}, reads back {back} (mode not writable with the EEPROM locked?)");
         }
         Ok(())
     }
 
-    /// Put motors in PWM mode with zero output and a PWM cap, then enable torque.
+    /// PWM mode with zero output and a PWM cap; torque on. Order: zero PWM and cap first,
+    /// so the motor never sees a stale Goal_Time when the mode flips.
     pub fn enter_pwm(&mut self, ids: &[u8], torque_limit: &[u16]) -> Result<()> {
         for (&id, &lim) in ids.iter().zip(torque_limit) {
+            self.retry("zero pwm", id, |b| b.write_u16(id, ADDR_GOAL_TIME, 0))?;
+            self.retry("torque limit", id, |b| b.write_u16(id, ADDR_TORQUE_LIMIT, lim))?;
             self.set_mode(id, MODE_PWM)?;
-            self.write_u16(id, ADDR_GOAL_TIME, 0)?;
-            self.write_u16(id, ADDR_TORQUE_LIMIT, lim)?;
-        }
-        for &id in ids {
             self.set_torque(id, true)?;
         }
         Ok(())
     }
 
-    /// Safe exit: zero PWM, back to position mode, goal = present position, torque on.
-    /// The arm holds wherever it is. Tries every motor even if one fails.
+    /// Safe exit: zero PWM, goal = present position, position mode, torque on. The goal is
+    /// set before the mode flips, so the joint holds where it is with no free fall.
+    /// Tries every motor even if one fails.
     pub fn hold_here(&mut self, ids: &[u8], torque_limit: u16) -> Result<()> {
         let _ = self.write_pwm(ids, &vec![0; ids.len()]);
         let mut first_err = None;
         for &id in ids {
             let r = (|| -> Result<()> {
-                let pos = self.read_u16(id, ADDR_PRESENT_POSITION)?;
+                let pos = self.retry("read position", id, |b| b.read_u16(id, ADDR_PRESENT_POSITION))?;
+                self.retry("goal position", id, |b| b.write_u16(id, ADDR_GOAL_POSITION, pos))?;
+                self.retry("torque limit", id, |b| b.write_u16(id, ADDR_TORQUE_LIMIT, torque_limit))?;
                 self.set_mode(id, MODE_POSITION)?;
-                self.write_u16(id, ADDR_GOAL_POSITION, pos)?;
-                self.write_u16(id, ADDR_TORQUE_LIMIT, torque_limit)?;
                 self.set_torque(id, true)
             })();
             if let Err(e) = r {
-                eprintln!("[{}] motor {id}: hold failed: {e:#}", self.port);
+                eprintln!("[{}] hold failed: {e:#}", self.port);
                 first_err.get_or_insert(e);
             }
         }
         first_err.map_or(Ok(()), Err)
     }
 
-    /// Emergency: zero PWM, torque off, position mode. The arm WILL fall.
+    /// Emergency: zero PWM, position mode, torque off. The arm WILL fall.
     pub fn release(&mut self, ids: &[u8]) -> Result<()> {
         let _ = self.write_pwm(ids, &vec![0; ids.len()]);
         for &id in ids {
             let _ = self.write_u16(id, ADDR_GOAL_TIME, 0);
+            self.set_torque(id, false)?;
             self.set_mode(id, MODE_POSITION)?;
         }
         Ok(())
