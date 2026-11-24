@@ -118,7 +118,7 @@ impl Loop<'_> {
                 for j in &arm.joints {
                     h += &format!(",{0}_deg,{0}_radps,{0}_tau,{0}_pwm,{0}_load", j.name);
                 }
-                h += ",gripper_pct,gripper_load,cycle_ms,imp_mode,tool_x,tool_y,tool_z,goal_x,goal_y,goal_z,pos_err_mm,rot_err_deg\n";
+                h += ",gripper_pct,gripper_load,cycle_ms,imp_mode,tool_x,tool_y,tool_z,goal_x,goal_y,goal_z,pos_err_mm,rot_err_deg,tool_qw,tool_qx,tool_qy,tool_qz\n";
                 w.write_all(h.as_bytes())?;
                 Some(w)
             }
@@ -183,7 +183,7 @@ impl Loop<'_> {
             // Impedance torque (URDF frame) -> motor frame, faded in like friction.
             let mut imp_tau = vec![0.0; arm.joints.len()];
             let mut imp_status = None;
-            let mut imp_log = String::from(",,,,,,,,,");
+            let mut imp_log = String::from(",,,,,,,,,,,,,");
             if let Some(imp) = self.imp.as_mut() {
                 imp.poll(arm);
                 let qd: Vec<f64> = arm.joints.iter().zip(&v_f).map(|(j, v)| j.sign * v).collect();
@@ -195,10 +195,11 @@ impl Loop<'_> {
                 let quat = imp.tool_quat(self.model, &q);
                 imp.send_state(arm, &deg, &out, quat);
                 imp_status = Some((out.mode_name, out.ee, imp.last_err_m));
+                let qt = quat.map_or([f64::NAN; 4], |q| [q.w, q.i, q.j, q.k]);
                 imp_log = format!(
-                    ",{},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.2},{:.2}",
+                    ",{},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.2},{:.2},{:.5},{:.5},{:.5},{:.5}",
                     out.mode_name, out.ee[0], out.ee[1], out.ee[2], out.goal[0], out.goal[1], out.goal[2],
-                    imp.last_err_m * 1e3, imp.last_rot_err_deg
+                    imp.last_err_m * 1e3, imp.last_rot_err_deg, qt[0], qt[1], qt[2], qt[3]
                 );
             }
 
