@@ -1,6 +1,8 @@
 # xlerobot-gravity-compensation
 
-Project page with the demo video, charts and write-up: `docs/index.html`. It's published with GitHub Pages from the `docs/` folder; preview it locally with `make site-serve`.
+Write-up with the demo video and charts: **[princep.github.io/blogs/2026-11-24-XLeRobot-Gravity-Compensation](https://princep.github.io/blogs/2026-11-24-XLeRobot-Gravity-Compensation/)** (source in `docs/`; preview locally with `make site-serve`, rebuild from a recording with `make site`).
+
+Setup: put your Orin's address in a git-ignored `config.local.mk` (`ORIN_HOST = 192.0.2.10`); `config.mk` holds the rest of the machine settings.
 
 Gravity compensation for the two SO-101 arms of a [MakerMods XLeRobot](https://github.com/PrinceP/MakerMods-XLeRobot) (Feetech STS3215 servos, Jetson Orin Nano). You move the arm by hand and it stays where you leave it.
 
