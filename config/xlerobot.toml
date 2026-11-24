@@ -166,3 +166,24 @@ stiction_pwm = 55.0
 [arms.left.overrides.wrist_roll]
 friction_pwm = 20.0
 stiction_pwm = 45.0
+
+# Right arm, measured with `gravcomp identify` in the extended pose (2026-11-24). pwm_sign -1 as on the left.
+# Break-away friction (PWM): pan 52, shoulder_lift 90, elbow 80, wrist_flex 53, wrist_roll 59.
+[arms.right.overrides.shoulder_pan]
+friction_pwm = 25.0
+stiction_pwm = 52.0
+[arms.right.overrides.shoulder_lift]
+pwm_per_nm = 133.0       # break-away -175 / +4 at 1.8 deg, model 0.643 N·m
+friction_pwm = 45.0
+stiction_pwm = 90.0
+[arms.right.overrides.elbow_flex]
+pwm_per_nm = 145.0       # break-away -157 / +4 at 2.4 deg, model 0.527 N·m
+friction_pwm = 40.0
+stiction_pwm = 80.0
+[arms.right.overrides.wrist_flex]
+pwm_per_nm = 187.0       # break-away -80 / +26, model 0.145 N·m
+friction_pwm = 25.0
+stiction_pwm = 53.0
+[arms.right.overrides.wrist_roll]
+friction_pwm = 25.0
+stiction_pwm = 59.0
