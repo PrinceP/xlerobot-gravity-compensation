@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>XLeRobot Gravity Compensation</title>
-<meta name="description" content="Gravity compensation, impedance control and a two-arm compliant board hold on the XLeRobot's SO-101 arms (Feetech STS3215 servos), in Rust on a Jetson Orin.">
+<meta name="description" content="Gravity compensation, impedance control and a two-arm compliant board hold on a MakerMods XLeRobot's SO-101 arms (Feetech STS3215 servos), in Rust on a Jetson Orin Nano.">
 <style>
 :root {
   color-scheme: light;
@@ -137,7 +137,7 @@ footer { margin: 72px 0 0; padding: 24px 0 40px; border-top: 1px solid var(--bor
   <div class="wrap">
     <div class="brand">XLeRobot gravity compensation</div>
     <nav class="toc" aria-label="Sections">
-      <a href="#demo">Demo</a><a href="#feasibility">Feasibility</a><a href="#how">How it works</a><a href="#gravity">Gravity</a><a href="#impedance">Impedance</a><a href="#board">Board hold</a><a href="#lessons">Lessons</a><a href="#run">Run it</a>
+      <a href="#demo">Demo</a><a href="#robot">Robot</a><a href="#feasibility">Feasibility</a><a href="#how">How it works</a><a href="#gravity">Gravity</a><a href="#impedance">Impedance</a><a href="#board">Board hold</a><a href="#lessons">Lessons</a><a href="#run">Run it</a>
     </nav>
     <button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle dark mode">Theme</button>
   </div>
@@ -145,7 +145,7 @@ footer { margin: 72px 0 0; padding: 24px 0 40px; border-top: 1px solid var(--bor
 
 <main class="wrap">
   <h1>Two robot arms holding a board level, soft to the touch</h1>
-  <p class="lede">Gravity compensation, impedance control and a two-arm compliant board hold on the XLeRobot's SO-101 arms. The arms use hobby-grade Feetech STS3215 servos, which have no torque mode. The control loop is written in Rust and runs on a Jetson Orin. It's a port of NVIDIA's <a href="https://developer.nvidia.com/blog/make-a-robot-arm-feel-weightless-with-nvidia-holoscan-5/">"Make a robot arm feel weightless with Holoscan"</a> to much cheaper hardware.</p>
+  <p class="lede">Gravity compensation, impedance control and a two-arm compliant board hold on the XLeRobot's SO-101 arms. The arms use hobby-grade Feetech STS3215 servos, which have no torque mode. The control loop is written in Rust and runs on a Jetson Orin Nano. It's a port of NVIDIA's <a href="https://developer.nvidia.com/blog/make-a-robot-arm-feel-weightless-with-nvidia-holoscan-5/">"Make a robot arm feel weightless with Holoscan"</a> to much cheaper hardware.</p>
 
   <section id="demo" aria-labelledby="demo-h">
     <h2 id="demo-h" class="sr-only" style="margin-top:28px">Demo</h2>
@@ -162,6 +162,23 @@ footer { margin: 72px 0 0; padding: 24px 0 40px; border-top: 1px solid var(--bor
       <div class="stat"><div class="v">250 Hz</div><div class="l">control loop per arm, p99 cycle 2.1 ms (budget 4 ms)</div></div>
       <div class="stat"><div class="v">2·10⁻¹⁵</div><div class="l">N·m: the Rust gravity model against Pinocchio, 100 random poses per arm</div></div>
     </div>
+  </section>
+
+  <section id="robot">
+    <h2>The robot</h2>
+    <p>Everything here runs on my <a href="https://github.com/PrinceP/MakerMods-XLeRobot">MakerMods XLeRobot build</a>. That's MakerMods' upgraded hardware for the <a href="https://github.com/Vector-Wangel/XLeRobot">XLeRobot</a> bimanual mobile robot: a redesigned 3D-printed structure on an IKEA RÅSKOG cart, with an omni-wheel base. It's drop-in compatible with <a href="https://github.com/huggingface/lerobot">LeRobot</a>. The compute is an <b>NVIDIA Jetson Orin Nano</b> (JetPack 6, L4T R36.5) mounted on the robot.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Part</th><th>Hardware</th><th>Bus</th></tr></thead>
+      <tbody>
+        <tr><td>Two follower arms (SO-101)</td><td>6 × Feetech STS3215-C018 each: 1:345 gearing, 12 V, magnetic encoder on the output (4096 steps per turn)</td><td>left arm IDs 1–6 on the left board, right arm IDs 1–6 on the right board</td></tr>
+        <tr><td>Head (pan / tilt)</td><td>2 × STS3215-C018, head camera</td><td>IDs 7–8, left board</td></tr>
+        <tr><td>Mobile base</td><td>3 × STS3215-C018 omni wheels</td><td>IDs 7–9, right board</td></tr>
+        <tr><td>Servo buses</td><td>2 × Waveshare serial bus driver boards, 1 Mbaud, USB to the Orin Nano</td><td><code>/dev/ttyACM0</code> left arm + head, <code>/dev/ttyACM1</code> right arm + base</td></tr>
+        <tr><td>Cameras</td><td>3 USB cameras: head, left wrist, right wrist</td><td>USB hubs on the top base</td></tr>
+        <tr><td>Model</td><td>MakerMods <code>xlerobot.urdf</code> (Apache-2.0) from that repo, used here for the gravity model and kinematics</td><td></td></tr>
+      </tbody>
+    </table></div>
+    <p class="small">Only the 12 V follower arms and grippers are controlled here. The head, the base and the 7.4 V leader arms aren't used by this project. The <code>gravcomp</code> binary checks which bus is which on startup, because the <code>ttyACM</code> numbers can swap: the right arm's board is the one where motor 9 (a base wheel) answers.</p>
   </section>
 
   <section id="feasibility">

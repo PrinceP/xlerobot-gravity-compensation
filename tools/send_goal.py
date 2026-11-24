@@ -20,13 +20,30 @@ import json
 import math
 import socket
 import time
+from pathlib import Path
 
 PORTS = {"left": 5701, "right": 5702}
 
 
+def default_host():
+    """ORIN_HOST from the environment, else config.local.mk / config.mk next to the repo root."""
+    import os
+    import re
+    if os.environ.get("ORIN_HOST"):
+        return os.environ["ORIN_HOST"]
+    root = Path(__file__).resolve().parent.parent
+    for name in ("config.local.mk", "config.mk"):
+        f = root / name
+        if f.exists():
+            m = re.search(r"^ORIN_HOST\s*\??=\s*(\S+)", f.read_text(), re.M)
+            if m:
+                return m.group(1)
+    return "orin.local"
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default="orin.local")
+    ap.add_argument("--host", default=default_host())
     ap.add_argument("--arm", default="left", choices=PORTS)
     ap.add_argument("--ttl", type=float, default=0.0, help="goal lifetime for one-shot goals (0 = until replaced)")
     ap.add_argument("--stiffness", type=float, default=1.0)

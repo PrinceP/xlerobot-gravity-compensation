@@ -1,6 +1,6 @@
 # Machine settings (same values as xlerobot-ops/config.mk).
 ORIN_USER ?= orin
-ORIN_HOST ?= orin.local
+ORIN_HOST ?= orin.local       # set your Orin's address in config.local.mk (git-ignored)
 ORIN_DIR  ?= xlerobot-gravity-compensation
 # Orin conda env (has cv2 for the camera recorder)
 ORIN_PY   ?= /home/orin/miniconda3/envs/xlerobot/bin/python

@@ -122,9 +122,25 @@ def report(arms, m):
     return r["st"], r["w"]
 
 
+def default_host():
+    """ORIN_HOST from the environment, else config.local.mk / config.mk next to the repo root."""
+    import os
+    import re
+    if os.environ.get("ORIN_HOST"):
+        return os.environ["ORIN_HOST"]
+    root = Path(__file__).resolve().parent.parent
+    for name in ("config.local.mk", "config.mk"):
+        f = root / name
+        if f.exists():
+            m = re.search(r"^ORIN_HOST\s*\??=\s*(\S+)", f.read_text(), re.M)
+            if m:
+                return m.group(1)
+    return "orin.local"
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default="orin.local")
+    ap.add_argument("--host", default=default_host())
     ap.add_argument("--watch", action="store_true")
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--wait", type=float, default=0.0, help="seconds to keep retrying until both arms answer")
