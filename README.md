@@ -1,5 +1,7 @@
 # xlerobot-gravity-compensation
 
+Project page with the demo video, charts and write-up: `docs/index.html`. It's published with GitHub Pages from the `docs/` folder; preview it locally with `make site-serve`.
+
 Gravity compensation for the two SO-101 arms of the XLeRobot (Feetech STS3215 servos, Jetson Orin). You move the arm by hand and it stays where you leave it.
 
 This is a port of NVIDIA's [Make a robot arm feel weightless with Holoscan 5](https://developer.nvidia.com/blog/make-a-robot-arm-feel-weightless-with-nvidia-holoscan-5/) ([tutorial](https://nvidia-holoscan.github.io/tutorials/rebot-gravity-compensation/)). NVIDIA used a Seeed reBot B601-DM arm. This version is plain Rust with no Holoscan, written for a hobby-servo arm.

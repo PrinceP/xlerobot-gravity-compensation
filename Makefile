@@ -13,7 +13,14 @@ ASSIST ?= 0.2
 DEMO_SESSION := gravcomp-demo
 STAMP := $(shell date +%Y%m%d-%H%M%S)
 
-.PHONY: help test check-model sync rust-orin build probe pose rest imp board board-demo open run demo record hold release identify free-ports fetch-demo
+# GitHub Pages site (docs/): regenerate chart data + web video from a board-demo recording, preview locally.
+DEMO ?= $(lastword $(sort $(wildcard demo/*-board)))
+site:
+	python3 tools/site_data.py $(DEMO)
+site-serve:
+	cd docs && python3 -m http.server 8000
+
+.PHONY: site site-serve help test check-model sync rust-orin build probe pose rest imp board board-demo open run demo record hold release identify free-ports fetch-demo
 
 help:
 	@echo "xlerobot-gravity-compensation"
@@ -35,6 +42,7 @@ help:
 	@echo "  make rest            Fold ARM=$(ARM) to the rest pose, then torque off (keeps servos cool)"
 	@echo "  make hold | make release   Position-hold all arm motors | torque off (arm falls)"
 	@echo "  make fetch-demo      Copy recorded demos from the Orin to ./demo"
+	@echo "  make site [DEMO=demo/<stamp>-board]   Rebuild docs/ data + video for GitHub Pages; make site-serve to preview"
 
 test:
 	cargo test --release
