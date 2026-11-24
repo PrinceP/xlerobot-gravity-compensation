@@ -103,7 +103,8 @@ pub struct ImpOut {
 }
 
 impl Impedance {
-    pub fn new(cfg: ImpCfg, listen: Option<&str>, start_hold: bool) -> Result<Self> {
+    /// `stiffness` scales the spring gains until a goal message sets its own.
+    pub fn new(cfg: ImpCfg, listen: Option<&str>, start_hold: bool, stiffness: f64) -> Result<Self> {
         let sock = match listen {
             Some(addr) => {
                 let s = UdpSocket::bind(addr).with_context(|| format!("bind UDP {addr}"))?;
@@ -120,7 +121,7 @@ impl Impedance {
             last_state_tx: Instant::now(),
             mode: Mode::Off,
             expires: None,
-            stiffness: 1.0,
+            stiffness: stiffness.clamp(0.0, 2.0),
             q_target: vec![0.0; 5],
             p_target: Vector3::zeros(),
             r_target: None,
@@ -157,7 +158,9 @@ impl Impedance {
         }
         let ttl = m.ttl.unwrap_or(self.cfg.goal_ttl_s);
         self.expires = (ttl > 0.0).then(|| Instant::now() + Duration::from_secs_f64(ttl));
-        self.stiffness = m.stiffness.unwrap_or(1.0).clamp(0.0, 2.0);
+        if let Some(k) = m.stiffness {
+            self.stiffness = k.clamp(0.0, 2.0);
+        }
         let prev = self.mode;
         match m.mode.as_str() {
             "joints" => {

@@ -7,6 +7,9 @@ GC   := cd $(ORIN_DIR) && sg dialout -c
 BIN  := target/release/gravcomp
 ARM  ?= both
 SCALE ?= 1.0
+# Board hold feel: spring scale (1 = config gains) and at-rest friction push toward the goal (0..1).
+STIFF ?= 0.5
+ASSIST ?= 0.4
 DEMO_SESSION := gravcomp-demo
 STAMP := $(shell date +%Y%m%d-%H%M%S)
 
@@ -26,7 +29,7 @@ help:
 	@echo "  make run [ARM=both SCALE=0.5 JOINTS=elbow_flex,...]   Gravity compensation (Ctrl+C = hold)"
 	@echo "  make imp [ARM=left SCALE=1.0 HOLD=1 GRASP=1 POSE=extended DURATION=90]   + impedance goals over UDP (tools/send_goal.py)"
 	@echo "  make open ARM=left   Open the gripper (let go of the ball), gripper torque off"
-	@echo "  make board [DURATION=120]   Both arms grasp a board edge and hold it (then tools/level_board.py --apply)"
+	@echo "  make board [STIFF=0.5 ASSIST=0.4 DURATION=120]   Both arms grasp a board edge, hold it level (tools/level_board.py)"
 	@echo "  make demo [SCALE=..] Pose + grasp ping pong balls + gravcomp + 3-camera recording (tmux)"
 	@echo "  make rest            Fold ARM=$(ARM) to the rest pose, then torque off (keeps servos cool)"
 	@echo "  make hold | make release   Position-hold all arm motors | torque off (arm falls)"
@@ -62,12 +65,12 @@ identify:
 
 # Impedance: gravity comp + goal spring. HOLD=1 starts as a soft spring at the start pose. Goals: tools/send_goal.py
 imp:
-	$(SSHT) "mkdir -p $(ORIN_DIR)/logs && $(GC) '$(BIN) run --arm $(ARM) --scale $(SCALE) -v --listen $(if $(HOLD),--hold) $(if $(GRASP),--grasp) $(if $(POSE),--pose $(POSE)) $(if $(DURATION),--duration $(DURATION)) --log logs/$(STAMP)-imp-{arm}.csv'"
+	$(SSHT) "mkdir -p $(ORIN_DIR)/logs && $(GC) '$(BIN) run --arm $(ARM) --scale $(SCALE) -v --listen $(if $(HOLD),--hold) $(if $(GRASP),--grasp --object \"ping pong ball\") $(if $(POSE),--pose $(POSE)) $(if $(DURATION),--duration $(DURATION)) --log logs/$(STAMP)-imp-{arm}.csv'"
 
 # Two-arm board hold: both arms extend, grasp the board edge (Enter per arm), hold position + orientation.
 # Then: python tools/level_board.py --apply   (and --watch). Ctrl+C holds; then make rest ARM=both.
 board:
-	$(SSHT) "mkdir -p $(ORIN_DIR)/logs && $(GC) '$(BIN) run --arm both --scale $(SCALE) -v --listen --hold --level $(if $(NOGRASP),,--grasp) --pose extended $(if $(DURATION),--duration $(DURATION)) --log logs/$(STAMP)-board-{arm}.csv'"
+	$(SSHT) "mkdir -p $(ORIN_DIR)/logs && $(GC) '$(BIN) run --arm both --scale $(SCALE) -v --listen --hold --level --stiffness $(STIFF) --assist $(ASSIST) $(if $(NOGRASP),,--grasp --object \"board edge\") --pose extended $(if $(DURATION),--duration $(DURATION)) --log logs/$(STAMP)-board-{arm}.csv'"
 
 # Open the gripper (let go of the ball) and turn its torque off.
 open:

@@ -89,7 +89,7 @@ enum Cmd {
         /// After the pose move, level each gripper (forward and sideways) in position mode.
         #[arg(long)]
         level: bool,
-        /// Open grippers, wait for a ping pong ball each, close on it, then run.
+        /// Open grippers, wait for the object (see --object) in each, close on it, then run.
         #[arg(long)]
         grasp: bool,
         /// Stop after this many seconds.
@@ -106,6 +106,16 @@ enum Cmd {
         /// Impedance control: start as a soft spring holding the start pose (implies --listen).
         #[arg(long)]
         hold: bool,
+        /// Impedance spring scale until a goal message sets its own (0..2; 1 = config gains).
+        #[arg(long, default_value_t = 1.0)]
+        stiffness: f64,
+        /// Override [impedance] assist_frac: at-rest friction push toward the goal (0..1).
+        /// Higher returns more exactly; lower feels softer when you start pushing.
+        #[arg(long)]
+        assist: Option<f64>,
+        /// What the grippers grasp, for the prompts (e.g. "board edge").
+        #[arg(long, default_value = "object")]
+        object: String,
     },
     /// Move the gripper to a percentage of its range (e.g. 60 = open, to let go of a ball).
     Gripper {
@@ -322,10 +332,17 @@ fn main() -> Result<()> {
             }
         }
 
-        Cmd::Run { arm, scale, joints, pose, level, grasp, duration, log, verbose, listen, hold } => {
+        Cmd::Run { arm, scale, joints, pose, level, grasp, duration, log, verbose, listen, hold, stiffness, assist, object } => {
             if !(0.0..=1.5).contains(scale) {
                 bail!("--scale must be in 0..1.5");
             }
+            let cfg = {
+                let mut c = cfg.clone();
+                if let (Some(a), Some(i)) = (assist, c.impedance.as_mut()) {
+                    i.assist_frac = a.clamp(0.0, 1.0);
+                }
+                c
+            };
             let stop = Arc::new(AtomicBool::new(false));
             {
                 let stop = stop.clone();
@@ -364,7 +381,7 @@ fn main() -> Result<()> {
             }
             if *grasp {
                 for (a, _, bus) in &mut arms {
-                    control::grasp(bus, a, &cfg, &wait_enter)?;
+                    control::grasp(bus, a, &cfg, object, &wait_enter)?;
                 }
             }
             if stop.load(Ordering::SeqCst) {
@@ -384,7 +401,7 @@ fn main() -> Result<()> {
                                 let icfg = cfg.impedance.clone().expect("[impedance] missing in config");
                                 let icfg = crate::impedance::ImpCfg { ee_link: format!("{}{}", icfg.ee_link, a.cfg.urdf_suffix), ..icfg };
                                 let addr = a.cfg.goal_port.map(|p| format!("0.0.0.0:{p}"));
-                                match crate::impedance::Impedance::new(icfg, addr.as_deref(), *hold) {
+                                match crate::impedance::Impedance::new(icfg, addr.as_deref(), *hold, *stiffness) {
                                     Ok(i) => {
                                         if let Some(ad) = &addr {
                                             println!("[{}] impedance goals on udp {ad}", a.name);

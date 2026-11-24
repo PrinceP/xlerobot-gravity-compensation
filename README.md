@@ -133,10 +133,14 @@ Both arms hold a light board level: Cartesian position and orientation hold per 
 - **Levelling, step 1 (`--level`):** before compliance starts, each gripper is levelled in the servos' own position mode, which holds an angle to about 0.1°. A model-based Newton step on wrist_flex and wrist_roll repeats until pitch and roll are both under 0.2°. The compliant hold can't make corrections that small, because a wrist rotation also moves the tip, so shoulder, elbow and wrist all have to move at once, and all three are inside their friction dead bands.
 - **Levelling, step 2 (`tools/level_board.py --apply`):** sets both tips to their mean height and makes each gripper's board normal vertical. `--watch` reports the tilt continuously.
 
+Feel. The board ties both arms together, so a push meets both position springs and both orientation springs at once, through a 30 cm lever. At full config gains (`STIFF=1`, assist 0.8) a push moved the grippers only 3–12 mm, which was too stiff to move by hand. The board defaults are `--stiffness 0.5 --assist 0.4`. Levelling happens in position mode before the hold starts, so a softer hold doesn't cost levelness at the start.
+
 Measured without a board (2026-11-24): grippers levelled to 0.13° in position mode; after the switch to the compliant hold, 0.0° on the left, 0.4–0.5° on the right, and 0.3° side to side.
 
 ```bash
 make board DURATION=120          # extend, level grippers, hand over the board (Enter per arm), hold
+make board STIFF=0.3 ASSIST=0.2  # softer to the touch (less exact return); defaults STIFF=0.5 ASSIST=0.4
+make board NOGRASP=1             # board already clamped: skip opening/closing the grippers
 python tools/level_board.py --apply   # equalize tip heights, normals vertical
 python tools/level_board.py --watch   # tilt report at 5 Hz
 make rest ARM=both

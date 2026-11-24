@@ -312,7 +312,7 @@ impl Loop<'_> {
 
 /// Open the gripper, wait for the user, close until the load says "holding".
 /// Gripper stays in position mode the whole time.
-pub fn grasp(bus: &mut Bus, arm: &Arm, cfg: &Config, wait_enter: &dyn Fn(&str)) -> Result<()> {
+pub fn grasp(bus: &mut Bus, arm: &Arm, cfg: &Config, object: &str, wait_enter: &dyn Fn(&str)) -> Result<()> {
     let g = &cfg.gripper;
     let cal = arm.gripper_cal;
     let id = g.id;
@@ -330,7 +330,7 @@ pub fn grasp(bus: &mut Bus, arm: &Arm, cfg: &Config, wait_enter: &dyn Fn(&str)) 
         bus.write_u16(id, servo::ADDR_GOAL_POSITION, cal.pct_to_raw(pct) as u16)?;
         std::thread::sleep(Duration::from_millis(20));
     }
-    wait_enter(&format!("{tag} Put the ping pong ball between the {} jaws and keep holding it, then press Enter", arm.name));
+    wait_enter(&format!("{tag} Put the {object} between the {} jaws and keep holding it, then press Enter", arm.name));
 
     // Close until load rises.
     bus.write_u16(id, servo::ADDR_TORQUE_LIMIT, g.hold_torque_limit.max(300))?;
@@ -349,7 +349,7 @@ pub fn grasp(bus: &mut Bus, arm: &Arm, cfg: &Config, wait_enter: &dyn Fn(&str)) 
         }
         if pct <= 0.0 {
             bus.write_u16(id, servo::ADDR_TORQUE_LIMIT, g.hold_torque_limit)?;
-            bail!("{tag} gripper closed fully without feeling the ball");
+            bail!("{tag} gripper closed fully without feeling the {object}");
         }
     }
 }
