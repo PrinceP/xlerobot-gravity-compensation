@@ -125,6 +125,23 @@ A policy streams `{"mode":"joints","q_deg":[...],"ttl":0.2}` or `{"mode":"pose",
 
 Limitation: static friction is 0.3–0.6 N·m per joint, so a soft spring has a dead band. At `kp_lin = 150 N/m` that's about 1–2 cm. Stiffer springs, set in `[impedance]` or per goal with `"stiffness"`, tighten it but feel less compliant.
 
+## Two-arm board hold
+
+Both arms hold a light board level: Cartesian position and orientation hold per arm, gravity compensated and compliant to the touch. The test board was 40 × 30 × 1.4 cm foam.
+
+- **Layout:** the board's 40 cm edge faces the robot. Each gripper clamps that edge about 6 cm in from a corner; in the extended pose the gripper tips are 27.4 cm apart. The jaws close vertically at wrist_roll 0, so the board lies in the grippers' forward/sideways plane.
+- **Levelling, step 1 (`--level`):** before compliance starts, each gripper is levelled in the servos' own position mode, which holds an angle to about 0.1°. A model-based Newton step on wrist_flex and wrist_roll repeats until pitch and roll are both under 0.2°. The compliant hold can't make corrections that small, because a wrist rotation also moves the tip, so shoulder, elbow and wrist all have to move at once, and all three are inside their friction dead bands.
+- **Levelling, step 2 (`tools/level_board.py --apply`):** sets both tips to their mean height and makes each gripper's board normal vertical. `--watch` reports the tilt continuously.
+
+Measured without a board (2026-11-24): grippers levelled to 0.13° in position mode; after the switch to the compliant hold, 0.0° on the left, 0.4–0.5° on the right, and 0.3° side to side.
+
+```bash
+make board DURATION=120          # extend, level grippers, hand over the board (Enter per arm), hold
+python tools/level_board.py --apply   # equalize tip heights, normals vertical
+python tools/level_board.py --watch   # tilt report at 5 Hz
+make rest ARM=both
+```
+
 ## Holoscan later
 
 On JetPack 7.x, the three NVIDIA operators map onto this code one-to-one (table above). A Holoscan graph would wrap `read_state`, `gravity` and `write_pwm`. The serial bus would still cap the rate at about 300–400 Hz.
