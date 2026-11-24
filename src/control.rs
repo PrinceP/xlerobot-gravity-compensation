@@ -143,6 +143,8 @@ impl Loop<'_> {
         let mut last_print = t0;
         let mut rr = 0usize; // round-robin health check
         let mut pwm_out = vec![0i32; active.len()];
+        let mut hot = vec![0u32; active.len()];
+        let mut low_v = vec![0u32; active.len()];
 
         while !stop.load(Ordering::Relaxed) {
             let cycle_start = Instant::now();
@@ -230,18 +232,28 @@ impl Loop<'_> {
                 }
             }
 
-            // One health read per cycle, round-robin over the PWM motors.
+            // Health read every 25 cycles, round-robin over the PWM motors. A fault needs 3
+            // bad readings in a row on the same motor: one corrupted reply once read 62 °C on
+            // an elbow that was at 35 °C (2026-11-24). Implausible values are ignored.
             if n % 25 == 0 {
-                let id = pwm_ids[rr % pwm_ids.len()];
+                let k = rr % pwm_ids.len();
+                let id = pwm_ids[k];
                 rr += 1;
                 if let Ok(t) = self.bus.read_u8(id, servo::ADDR_PRESENT_TEMPERATURE) {
-                    if t > s.max_temp_c {
-                        bail!("{tag} motor {id} at {t} °C");
+                    if t <= 100 {
+                        hot[k] = if t > s.max_temp_c { hot[k] + 1 } else { 0 };
+                        if hot[k] >= 3 {
+                            bail!("{tag} motor {id} at {t} °C (3 readings in a row)");
+                        }
                     }
                 }
                 if let Ok(v) = self.bus.read_u8(id, servo::ADDR_PRESENT_VOLTAGE) {
-                    if (v as f64 / 10.0) < s.min_voltage_v {
-                        bail!("{tag} motor {id} supply {:.1} V", v as f64 / 10.0);
+                    let v = v as f64 / 10.0;
+                    if (3.0..=20.0).contains(&v) {
+                        low_v[k] = if v < s.min_voltage_v { low_v[k] + 1 } else { 0 };
+                        if low_v[k] >= 3 {
+                            bail!("{tag} motor {id} supply {v:.1} V (3 readings in a row)");
+                        }
                     }
                 }
             }

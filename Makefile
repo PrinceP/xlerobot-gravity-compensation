@@ -6,7 +6,7 @@ SSHT := ssh -t -o ConnectTimeout=10 $(ORIN_USER)@$(ORIN_HOST)
 GC   := cd $(ORIN_DIR) && sg dialout -c
 BIN  := target/release/gravcomp
 ARM  ?= both
-SCALE ?= 0.5
+SCALE ?= 1.0
 DEMO_SESSION := gravcomp-demo
 STAMP := $(shell date +%Y%m%d-%H%M%S)
 
