@@ -374,7 +374,7 @@ pub fn level_wrists(bus: &mut Bus, arm: &Arm, cfg: &Config, model: &ArmModel) ->
     let wr = arm.joints.iter().position(|j| j.name == "wrist_roll").ok_or_else(|| anyhow::anyhow!("no wrist_roll"))?;
     let all_ids: Vec<u8> = arm.ids().into_iter().chain([cfg.gripper.id]).collect();
     let tag = format!("[{}]", arm.name);
-    for iter in 0..4 {
+    for iter in 0..6 {
         let st = bus.read_state(&all_ids)?;
         let q = urdf_q(arm, cfg, &st);
         let (p0, r0) = gripper_tilt(model, &q, &link)?;
@@ -401,14 +401,17 @@ pub fn level_wrists(bus: &mut Bus, arm: &Arm, cfg: &Config, model: &ArmModel) ->
         let dq_r = (-(-jac[1][0] * p0 + jac[0][0] * r0) / det).clamp(-lim, lim);
         for (k, dq) in [(wf, dq_f), (wr, dq_r)] {
             let j = &arm.joints[k];
-            let target_deg = j.cal.raw_to_deg(st[k].pos) + (dq / j.sign).to_degrees();
+            // Add the correction to the GOAL, not the present position: a loaded servo stops a
+            // little short of its goal, and stepping from the present position never closes that.
+            let goal_now = bus.read_u16(j.id, servo::ADDR_GOAL_POSITION)? as i32;
+            let target_deg = j.cal.raw_to_deg(goal_now) + (dq / j.sign).to_degrees();
             let (lo, hi) = j.cal.deg_range();
             let m = cfg.safety.limit_margin_deg;
             if target_deg < lo + m || target_deg > hi - m {
                 bail!("{tag} levelling needs {} at {target_deg:.1}°, outside {:.1}..{:.1}", j.name, lo + m, hi - m);
             }
             // Small move, a few steps, position mode (the joint is already holding).
-            let start = st[k].pos as f64;
+            let start = goal_now as f64;
             let goal = j.cal.mid() + target_deg * 4095.0 / 360.0;
             for s in 1..=10 {
                 let g = start + (goal - start) * s as f64 / 10.0;
@@ -420,7 +423,7 @@ pub fn level_wrists(bus: &mut Bus, arm: &Arm, cfg: &Config, model: &ArmModel) ->
     }
     let st = bus.read_state(&all_ids)?;
     let (p, r) = gripper_tilt(model, &urdf_q(arm, cfg, &st), &link)?;
-    println!("{tag} level: stopped at pitch {:+.2}°, roll {:+.2}° after 4 steps", p.to_degrees(), r.to_degrees());
+    println!("{tag} level: stopped at pitch {:+.2}°, roll {:+.2}° after 6 steps", p.to_degrees(), r.to_degrees());
     Ok(())
 }
 
