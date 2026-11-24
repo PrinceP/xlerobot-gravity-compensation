@@ -354,6 +354,76 @@ pub fn grasp(bus: &mut Bus, arm: &Arm, cfg: &Config, wait_enter: &dyn Fn(&str)) 
     }
 }
 
+/// Gripper tilt from level (rad): (forward axis elevation, sideways axis elevation).
+/// Gripper frame: local -y points forward along the jaws, local z sideways (jaw hinge),
+/// local +x is the normal of a board clamped between the jaws.
+pub fn gripper_tilt(model: &ArmModel, q: &[f64], link: &str) -> Result<(f64, f64)> {
+    let r = model.frame_pose(q, link)?.rotation;
+    let f = r * nalgebra::Vector3::new(0.0, -1.0, 0.0);
+    let l = r * nalgebra::Vector3::new(0.0, 0.0, 1.0);
+    Ok((f.z.clamp(-1.0, 1.0).asin(), l.z.clamp(-1.0, 1.0).asin()))
+}
+
+/// Level the gripper in position mode (stiff servo loop, ~0.1 deg) by correcting wrist_flex
+/// and wrist_roll from the model: a Newton step on (pitch, roll) with the 2x2 Jacobian from
+/// finite differences, repeated until both are under 0.2 deg. The compliant hold can't make
+/// small orientation corrections (friction at three joints), so this runs before it.
+pub fn level_wrists(bus: &mut Bus, arm: &Arm, cfg: &Config, model: &ArmModel) -> Result<()> {
+    let link = format!("{}{}", cfg.impedance.as_ref().map_or("Fixed_Jaw_tip", |c| c.ee_link.as_str()), arm.cfg.urdf_suffix);
+    let wf = arm.joints.iter().position(|j| j.name == "wrist_flex").ok_or_else(|| anyhow::anyhow!("no wrist_flex"))?;
+    let wr = arm.joints.iter().position(|j| j.name == "wrist_roll").ok_or_else(|| anyhow::anyhow!("no wrist_roll"))?;
+    let all_ids: Vec<u8> = arm.ids().into_iter().chain([cfg.gripper.id]).collect();
+    let tag = format!("[{}]", arm.name);
+    for iter in 0..4 {
+        let st = bus.read_state(&all_ids)?;
+        let q = urdf_q(arm, cfg, &st);
+        let (p0, r0) = gripper_tilt(model, &q, &link)?;
+        println!("{tag} level {iter}: gripper pitch {:+.2}°, roll {:+.2}°", p0.to_degrees(), r0.to_degrees());
+        if p0.abs().to_degrees() < 0.2 && r0.abs().to_degrees() < 0.2 {
+            return Ok(());
+        }
+        let h = 1e-4;
+        let mut jac = [[0.0; 2]; 2];
+        for (c, k) in [wf, wr].into_iter().enumerate() {
+            let mut qh = q.clone();
+            qh[k] += h;
+            let (p1, r1) = gripper_tilt(model, &qh, &link)?;
+            jac[0][c] = (p1 - p0) / h;
+            jac[1][c] = (r1 - r0) / h;
+        }
+        let det = jac[0][0] * jac[1][1] - jac[0][1] * jac[1][0];
+        if det.abs() < 1e-6 {
+            bail!("{tag} cannot level the gripper from this pose (wrist singular)");
+        }
+        // Solve jac * dq = -(p0, r0), URDF radians; clamp each step to 10 degrees.
+        let lim = 10f64.to_radians();
+        let dq_f = (-(jac[1][1] * p0 - jac[0][1] * r0) / det).clamp(-lim, lim);
+        let dq_r = (-(-jac[1][0] * p0 + jac[0][0] * r0) / det).clamp(-lim, lim);
+        for (k, dq) in [(wf, dq_f), (wr, dq_r)] {
+            let j = &arm.joints[k];
+            let target_deg = j.cal.raw_to_deg(st[k].pos) + (dq / j.sign).to_degrees();
+            let (lo, hi) = j.cal.deg_range();
+            let m = cfg.safety.limit_margin_deg;
+            if target_deg < lo + m || target_deg > hi - m {
+                bail!("{tag} levelling needs {} at {target_deg:.1}°, outside {:.1}..{:.1}", j.name, lo + m, hi - m);
+            }
+            // Small move, a few steps, position mode (the joint is already holding).
+            let start = st[k].pos as f64;
+            let goal = j.cal.mid() + target_deg * 4095.0 / 360.0;
+            for s in 1..=10 {
+                let g = start + (goal - start) * s as f64 / 10.0;
+                bus.write_u16(j.id, servo::ADDR_GOAL_POSITION, g.round() as u16)?;
+                std::thread::sleep(Duration::from_millis(30));
+            }
+        }
+        std::thread::sleep(Duration::from_millis(400));
+    }
+    let st = bus.read_state(&all_ids)?;
+    let (p, r) = gripper_tilt(model, &urdf_q(arm, cfg, &st), &link)?;
+    println!("{tag} level: stopped at pitch {:+.2}°, roll {:+.2}° after 4 steps", p.to_degrees(), r.to_degrees());
+    Ok(())
+}
+
 /// Move the gripper slowly to `pct` of its calibrated range (position mode), e.g. to let go of a ball.
 pub fn gripper_to(bus: &mut Bus, arm: &Arm, cfg: &Config, pct: f64) -> Result<()> {
     let id = cfg.gripper.id;

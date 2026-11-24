@@ -197,7 +197,6 @@ impl ArmModel {
     }
 
     /// World pose of `link` at q.
-    #[allow(dead_code)] // used by tests
     pub fn frame_pose(&self, q: &[f64], link: &str) -> Result<Isometry3<f64>> {
         let i = self.link(link)?;
         Ok(self.forward(q).0[i])

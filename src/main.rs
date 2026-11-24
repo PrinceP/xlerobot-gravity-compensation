@@ -61,6 +61,11 @@ enum Cmd {
         #[arg(long, default_value = "extended")]
         name: String,
     },
+    /// Level the gripper(s) in position mode (wrist_flex / wrist_roll), from the model.
+    Level {
+        #[arg(long, default_value = "both")]
+        arm: String,
+    },
     /// Measure break-away PWM both ways for one joint at the present pose; suggests gains.
     Identify {
         #[arg(long)]
@@ -81,6 +86,9 @@ enum Cmd {
         /// Move to this named pose first (e.g. "extended").
         #[arg(long)]
         pose: Option<String>,
+        /// After the pose move, level each gripper (forward and sideways) in position mode.
+        #[arg(long)]
+        level: bool,
         /// Open grippers, wait for a ping pong ball each, close on it, then run.
         #[arg(long)]
         grasp: bool,
@@ -248,6 +256,16 @@ fn main() -> Result<()> {
             println!("Holding pose '{name}' (position mode).");
         }
 
+        Cmd::Level { arm } => {
+            for n in arm_names(arm) {
+                let a = cfg.arm(&n)?;
+                let m = load_model(&cli.config, &cfg, &a)?;
+                let mut bus = open_bus(&cfg, &a)?;
+                bus.hold_here(&a.ids(), cfg.safety.hold_torque_limit)?;
+                control::level_wrists(&mut bus, &a, &cfg, &m)?;
+            }
+        }
+
         Cmd::Identify { arm, joint } => {
             let a = cfg.arm(arm)?;
             let m = load_model(&cli.config, &cfg, &a)?;
@@ -304,7 +322,7 @@ fn main() -> Result<()> {
             }
         }
 
-        Cmd::Run { arm, scale, joints, pose, grasp, duration, log, verbose, listen, hold } => {
+        Cmd::Run { arm, scale, joints, pose, level, grasp, duration, log, verbose, listen, hold } => {
             if !(0.0..=1.5).contains(scale) {
                 bail!("--scale must be in 0..1.5");
             }
@@ -337,6 +355,11 @@ fn main() -> Result<()> {
                 let (q, speed) = cfg.pose(p)?;
                 for (a, _, bus) in &mut arms {
                     control::move_to_pose(bus, a, &cfg, &q, speed)?;
+                }
+            }
+            if *level {
+                for (a, m, bus) in &mut arms {
+                    control::level_wrists(bus, a, &cfg, m)?;
                 }
             }
             if *grasp {

@@ -67,7 +67,7 @@ imp:
 # Two-arm board hold: both arms extend, grasp the board edge (Enter per arm), hold position + orientation.
 # Then: python tools/level_board.py --apply   (and --watch). Ctrl+C holds; then make rest ARM=both.
 board:
-	$(SSHT) "mkdir -p $(ORIN_DIR)/logs && $(GC) '$(BIN) run --arm both --scale $(SCALE) -v --listen --hold $(if $(NOGRASP),,--grasp) --pose extended $(if $(DURATION),--duration $(DURATION)) --log logs/$(STAMP)-board-{arm}.csv'"
+	$(SSHT) "mkdir -p $(ORIN_DIR)/logs && $(GC) '$(BIN) run --arm both --scale $(SCALE) -v --listen --hold --level $(if $(NOGRASP),,--grasp) --pose extended $(if $(DURATION),--duration $(DURATION)) --log logs/$(STAMP)-board-{arm}.csv'"
 
 # Open the gripper (let go of the ball) and turn its torque off.
 open:
