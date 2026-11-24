@@ -50,7 +50,29 @@ pub struct ImpCfg {
     /// At rest, friction assist toward the spring = assist_frac * stiction_pwm * tanh(tau / assist_tau0).
     pub assist_frac: f64,
     pub assist_tau0: f64,
+    /// Soft push, firm return: once the arm has been still (all joints under still_radps)
+    /// and away from its goal (over return_err_mm or return_err_deg) for return_delay_s,
+    /// the assist ramps from assist_frac up to return_assist over return_ramp_s. Any motion
+    /// or reaching the goal drops it back to assist_frac. 0 return_assist = off.
+    #[serde(default)]
+    pub return_assist: f64,
+    #[serde(default = "d_return_delay")]
+    pub return_delay_s: f64,
+    #[serde(default = "d_return_ramp")]
+    pub return_ramp_s: f64,
+    #[serde(default = "d_still")]
+    pub still_radps: f64,
+    #[serde(default = "d_ret_mm")]
+    pub return_err_mm: f64,
+    #[serde(default = "d_ret_deg")]
+    pub return_err_deg: f64,
 }
+
+fn d_return_delay() -> f64 { 0.5 }
+fn d_return_ramp() -> f64 { 1.0 }
+fn d_still() -> f64 { 0.03 }
+fn d_ret_mm() -> f64 { 3.0 }
+fn d_ret_deg() -> f64 { 1.0 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Mode {
@@ -72,7 +94,9 @@ struct Msg {
 pub struct Impedance {
     cfg: ImpCfg,
     sock: Option<UdpSocket>,
-    peer: Option<SocketAddr>,
+    /// Clients that sent anything in the last 2 s get the state stream (a recorder overlay
+    /// and a levelling tool can watch at the same time).
+    peers: Vec<(SocketAddr, Instant)>,
     last_rx: Instant,
     last_state_tx: Instant,
     mode: Mode,
@@ -92,6 +116,8 @@ pub struct Impedance {
     pub last_err_m: f64,
     /// Orientation error to the commanded goal (deg); 0 without an orientation goal.
     pub last_rot_err_deg: f64,
+    /// At-rest friction assist fraction in use this cycle (set by the control loop).
+    pub assist_now: f64,
 }
 
 pub struct ImpOut {
@@ -116,7 +142,7 @@ impl Impedance {
         Ok(Self {
             cfg,
             sock,
-            peer: None,
+            peers: Vec::new(),
             last_rx: Instant::now(),
             last_state_tx: Instant::now(),
             mode: Mode::Off,
@@ -132,6 +158,7 @@ impl Impedance {
             fresh: true,
             last_err_m: 0.0,
             last_rot_err_deg: 0.0,
+            assist_now: 0.0,
         })
     }
 
@@ -199,7 +226,10 @@ impl Impedance {
         let mut buf = [0u8; 2048];
         let mut msgs = Vec::new();
         while let Ok((n, from)) = sock.recv_from(&mut buf) {
-            self.peer = Some(from);
+            match self.peers.iter_mut().find(|(a, _)| *a == from) {
+                Some(p) => p.1 = Instant::now(),
+                None => self.peers.push((from, Instant::now())),
+            }
             self.last_rx = Instant::now();
             match serde_json::from_slice::<Msg>(&buf[..n]) {
                 Ok(m) => msgs.push(m),
@@ -299,13 +329,11 @@ impl Impedance {
         })
     }
 
-    /// Stream state to the last sender (for a policy's observations), at state_hz, for 2 s
-    /// after its last message.
+    /// Stream state to every client heard from in the last 2 s, at state_hz.
     pub fn send_state(&mut self, arm: &Arm, deg: &[f64], out: &ImpOut, x_quat: Option<UnitQuaternion<f64>>) {
-        let (Some(sock), Some(peer)) = (&self.sock, self.peer) else { return };
-        if self.last_rx.elapsed() > Duration::from_secs(2)
-            || self.last_state_tx.elapsed().as_secs_f64() < 1.0 / self.cfg.state_hz
-        {
+        let Some(sock) = &self.sock else { return };
+        self.peers.retain(|(_, t)| t.elapsed() < Duration::from_secs(2));
+        if self.peers.is_empty() || self.last_state_tx.elapsed().as_secs_f64() < 1.0 / self.cfg.state_hz {
             return;
         }
         self.last_state_tx = Instant::now();
@@ -314,8 +342,12 @@ impl Impedance {
             "arm": arm.name, "t": crate::control::unix_s(), "mode": out.mode_name,
             "q_deg": deg, "pos": [out.ee[0], out.ee[1], out.ee[2]], "quat": quat,
             "goal_pos": [self.p_cmd[0], self.p_cmd[1], self.p_cmd[2]], "err_m": self.last_err_m,
+            "rot_err_deg": self.last_rot_err_deg, "assist": self.assist_now,
         });
-        let _ = sock.send_to(msg.to_string().as_bytes(), peer);
+        let bytes = msg.to_string();
+        for (peer, _) in &self.peers {
+            let _ = sock.send_to(bytes.as_bytes(), peer);
+        }
     }
 
     pub fn tool_quat(&self, model: &ArmModel, q: &[f64]) -> Option<UnitQuaternion<f64>> {

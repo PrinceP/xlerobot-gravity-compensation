@@ -144,6 +144,9 @@ impl Loop<'_> {
         let mut rr = 0usize; // round-robin health check
         let mut pwm_out = vec![0i32; active.len()];
         let mut hot = vec![0u32; active.len()];
+        let mut still_s = 0.0f64; // time the arm has been still and away from its goal
+        // Slow velocity for stillness only: one-step encoder flicker must not reset the timer.
+        let mut v_slow = vec![0.0f64; arm.joints.len()];
         let mut low_v = vec![0u32; active.len()];
 
         while !stop.load(Ordering::Relaxed) {
@@ -179,6 +182,7 @@ impl Loop<'_> {
 
             for i in 0..arm.joints.len() {
                 v_f[i] = 0.7 * v_f[i] + 0.3 * st[i].speed_radps();
+                v_slow[i] = 0.95 * v_slow[i] + 0.05 * st[i].speed_radps();
             }
             // Impedance torque (URDF frame) -> motor frame, faded in like friction.
             let mut imp_tau = vec![0.0; arm.joints.len()];
@@ -203,6 +207,19 @@ impl Loop<'_> {
                 );
             }
 
+            // Soft push, firm return (see ImpCfg::return_assist).
+            let mut assist_eff = cfg.impedance.as_ref().map_or(0.0, |c| c.assist_frac);
+            if let (Some(c), Some(imp)) = (cfg.impedance.as_ref(), self.imp.as_mut()) {
+                let still = active.iter().all(|&i| v_slow[i].abs() < c.still_radps);
+                let away = imp.last_err_m * 1e3 > c.return_err_mm || imp.last_rot_err_deg > c.return_err_deg;
+                still_s = if still && away { still_s + period.as_secs_f64() } else { 0.0 };
+                if c.return_assist > c.assist_frac {
+                    let b = ((still_s - c.return_delay_s) / c.return_ramp_s.max(1e-3)).clamp(0.0, 1.0);
+                    assist_eff = c.assist_frac + (c.return_assist - c.assist_frac) * b;
+                }
+                imp.assist_now = assist_eff;
+            }
+
             for (k, &i) in active.iter().enumerate() {
                 let j = &arm.joints[i];
                 let deg = j.cal.raw_to_deg(st[i].pos);
@@ -216,7 +233,7 @@ impl Loop<'_> {
                 // Coulomb feedforward in the direction of motion; at rest, in the direction the
                 // impedance spring pulls (breaks stiction toward the goal, fades out near it).
                 let mv = if j.friction_vel > 0.0 { (v_f[i] / j.friction_vel).tanh() } else { 0.0 };
-                let (frac, tau0) = cfg.impedance.as_ref().map_or((0.0, 1.0), |c| (c.assist_frac, c.assist_tau0));
+                let (frac, tau0) = (assist_eff, cfg.impedance.as_ref().map_or(1.0, |c| c.assist_tau0));
                 let intent = (imp_tau[i] / tau0).tanh() * (1.0 - mv.abs());
                 let fric = j.friction_pwm * mv + frac * j.stiction_pwm * intent;
                 let ff = opts.scale * ramp * j.gravity_scale * j.pwm_per_nm * tau[i]

@@ -3,6 +3,7 @@
 
     python tools/record_cameras.py --out demo/run1            # Ctrl+C to stop
     python tools/record_cameras.py --out demo/run1 --raw      # also keep one mp4 per camera
+    python tools/record_cameras.py --out demo/board --overlay-board --title "..."   # + live board tilt
 
 Layout (1440x540): head camera large on the left, left/right wrist cameras stacked on the
 right, with a label and wall-clock time burned in. A frame timestamp CSV is written next
@@ -20,6 +21,15 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+
+import importlib.util
+
+def _load_level_board():
+    """tools/level_board.py, loaded by path (it sits next to this file)."""
+    spec = importlib.util.spec_from_file_location("level_board", Path(__file__).with_name("level_board.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 # Stable USB paths on this Orin (from robotics-antigravity-plugin xlerobot_real_plan.py).
 CAMS = {
@@ -58,6 +68,47 @@ class Cam(threading.Thread):
             cap.release()
 
 
+class BoardOverlay(threading.Thread):
+    """Polls both arms' impedance state (UDP, this machine) and keeps the latest board tilt."""
+
+    def __init__(self, host):
+        super().__init__(daemon=True)
+        self.lb = _load_level_board()
+        self.arms = self.lb.Arms(host)
+        for s in self.arms.sock.values():
+            s.settimeout(0.3)
+        self.m = self.lb.mounts()
+        self.latest = None
+        self.running = True
+
+    def run(self):
+        while self.running:
+            try:
+                self.latest = self.lb.measure(self.arms, self.m)
+            except (SystemExit, OSError, ValueError, KeyError):
+                self.latest = None
+            time.sleep(0.1)
+
+
+def draw_board(frame, r):
+    """Board tilt and per-arm error, top-right of the head view."""
+    if r is None:
+        lines = [("board: waiting for gravcomp state", (80, 80, 255))]
+    else:
+        tilt = max(abs(r["side_deg"]), r["left"]["normal_deg"], r["right"]["normal_deg"])
+        col = (80, 220, 80) if tilt < 1.0 else (0, 165, 255) if tilt < 3.0 else (80, 80, 255)
+        lines = [(f"board tilt  side {r['side_deg']:+.1f} deg   normals L {r['left']['normal_deg']:.1f}  R {r['right']['normal_deg']:.1f} deg", col)]
+        for a in ("left", "right"):
+            x = r[a]
+            state = "returning" if x["assist"] > 0.5 else "compliant"
+            lines.append((f"{a:5s} err {x['err_mm']:5.1f} mm   {state}", (255, 255, 255)))
+    y = 44
+    for text, col in lines:
+        cv2.rectangle(frame, (8, y - 18), (8 + len(text) * 10 + 8, y + 8), (0, 0, 0), -1)
+        cv2.putText(frame, text, (14, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, col, 1, cv2.LINE_AA)
+        y += 30
+
+
 def fit(img, w, h, label):
     if img is None:
         img = np.zeros((h, w, 3), np.uint8)
@@ -75,6 +126,8 @@ def main():
     ap.add_argument("--fps", type=float, default=20.0)
     ap.add_argument("--title", default="XLeRobot - gravity compensation")
     ap.add_argument("--raw", action="store_true", help="also write one mp4 per camera")
+    ap.add_argument("--overlay-board", action="store_true", help="burn in board tilt from `gravcomp run --listen` (both arms)")
+    ap.add_argument("--state-host", default="127.0.0.1")
     ap.add_argument("--width", type=int, default=640)
     ap.add_argument("--height", type=int, default=480)
     for k, v in CAMS.items():
@@ -93,7 +146,11 @@ def main():
     raw = {k: cv2.VideoWriter(str(out / f"{k}.mp4"), fourcc, args.fps, (args.width, args.height)) for k in cams} if args.raw else {}
     ts = open(out / "frames.csv", "w", newline="")
     tw = csv.writer(ts)
-    tw.writerow(["frame", "t_unix"])
+    overlay = None
+    if args.overlay_board:
+        overlay = BoardOverlay(args.state_host)
+        overlay.start()
+    tw.writerow(["frame", "t_unix", "side_tilt_deg", "left_normal_deg", "right_normal_deg", "left_err_mm", "right_err_mm"])
 
     stop = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stop.set())
@@ -110,6 +167,9 @@ def main():
         lw = fit(cams["left_wrist"].frame, 480, 270, "left wrist")
         rw = fit(cams["right_wrist"].frame, 480, 270, "right wrist")
         frame = np.hstack([head, np.vstack([lw, rw])])
+        r = overlay.latest if overlay else None
+        if overlay:
+            draw_board(frame, r)
         stamp = datetime.fromtimestamp(now).strftime("%H:%M:%S.%f")[:-3]
         cv2.putText(frame, f"{args.title}   {stamp}", (12, 530), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
         tiled.write(frame)
@@ -117,11 +177,17 @@ def main():
             f = cams[k].frame
             if f is not None:
                 w.write(cv2.resize(f, (args.width, args.height)))
-        tw.writerow([n, f"{now:.4f}"])
+        if r:
+            tw.writerow([n, f"{now:.4f}", f"{r['side_deg']:.3f}", f"{r['left']['normal_deg']:.3f}", f"{r['right']['normal_deg']:.3f}",
+                         f"{r['left']['err_mm']:.2f}", f"{r['right']['err_mm']:.2f}"])
+        else:
+            tw.writerow([n, f"{now:.4f}", "", "", "", "", ""])
         n += 1
         nxt += period
         time.sleep(max(0.0, nxt - time.time()))
 
+    if overlay:
+        overlay.running = False
     for c in cams.values():
         c.running = False
     for c in cams.values():

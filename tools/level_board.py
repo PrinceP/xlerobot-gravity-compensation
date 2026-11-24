@@ -92,21 +92,33 @@ class Arms:
         self.sock[arm].sendto(json.dumps(msg).encode(), (self.host, PORTS[arm]))
 
 
-def report(arms, m):
+def measure(arms, m):
+    """Board tilt from both arms' states: dict of numbers (degrees, mm) plus the raw states."""
     st = {a: arms.state(a) for a in PORTS}
     w = {a: to_world(a, st[a]["pos"], m) for a in PORTS}
     dy = w["left"][1] - w["right"][1]
     dz = w["left"][2] - w["right"][2]
-    side = math.degrees(math.atan2(dz, abs(dy)))
-    parts = [f"side-to-side tilt {side:+5.2f} deg (left tip {dz*1e3:+5.1f} mm vs right), tip spacing {math.dist(w['left'], w['right'])*1e3:5.1f} mm"]
+    out = {"side_deg": math.degrees(math.atan2(dz, abs(dy))), "dz_mm": dz * 1e3,
+           "spacing_mm": math.dist(w["left"], w["right"]) * 1e3, "st": st, "w": w}
     for a in PORTS:
         n = rot(st[a]["quat"], [1, 0, 0])            # board normal (gripper local +x), base frame
         f = rot(st[a]["quat"], [0, -1, 0])           # gripper forward
-        tilt = math.degrees(math.acos(max(-1, min(1, -n[2]))))
-        pitch = math.degrees(math.asin(max(-1, min(1, f[2]))))
-        parts.append(f"{a}: normal {tilt:4.1f} deg off vertical (fwd pitch {pitch:+5.1f}), err {st[a]['err_m']*1e3:4.1f} mm, mode {st[a]['mode']}")
+        out[a] = {"normal_deg": math.degrees(math.acos(max(-1, min(1, -n[2])))),
+                  "pitch_deg": math.degrees(math.asin(max(-1, min(1, f[2])))),
+                  "err_mm": st[a]["err_m"] * 1e3, "assist": st[a].get("assist", float("nan")),
+                  "mode": st[a]["mode"]}
+    return out
+
+
+def report(arms, m):
+    r = measure(arms, m)
+    parts = [f"side-to-side tilt {r['side_deg']:+5.2f} deg (left tip {r['dz_mm']:+5.1f} mm vs right), tip spacing {r['spacing_mm']:5.1f} mm"]
+    for a in PORTS:
+        x = r[a]
+        parts.append(f"{a}: normal {x['normal_deg']:4.1f} deg off vertical (fwd pitch {x['pitch_deg']:+5.1f}), "
+                     f"err {x['err_mm']:4.1f} mm, assist {x['assist']:.2f}, mode {x['mode']}")
     print(" | ".join(parts))
-    return st, w
+    return r["st"], r["w"]
 
 
 def main():

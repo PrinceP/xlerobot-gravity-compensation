@@ -9,11 +9,11 @@ ARM  ?= both
 SCALE ?= 1.0
 # Board hold feel: spring scale (1 = config gains) and at-rest friction push toward the goal (0..1).
 STIFF ?= 0.5
-ASSIST ?= 0.4
+ASSIST ?= 0.2
 DEMO_SESSION := gravcomp-demo
 STAMP := $(shell date +%Y%m%d-%H%M%S)
 
-.PHONY: help test check-model sync rust-orin build probe pose rest imp board open run demo record hold release identify free-ports fetch-demo
+.PHONY: help test check-model sync rust-orin build probe pose rest imp board board-demo open run demo record hold release identify free-ports fetch-demo
 
 help:
 	@echo "xlerobot-gravity-compensation"
@@ -29,7 +29,8 @@ help:
 	@echo "  make run [ARM=both SCALE=0.5 JOINTS=elbow_flex,...]   Gravity compensation (Ctrl+C = hold)"
 	@echo "  make imp [ARM=left SCALE=1.0 HOLD=1 GRASP=1 POSE=extended DURATION=90]   + impedance goals over UDP (tools/send_goal.py)"
 	@echo "  make open ARM=left   Open the gripper (let go of the ball), gripper torque off"
-	@echo "  make board [STIFF=0.5 ASSIST=0.4 DURATION=120]   Both arms grasp a board edge, hold it level (tools/level_board.py)"
+	@echo "  make board [STIFF=0.5 ASSIST=0.2 DURATION=120]   Both arms grasp a board edge, hold it level (tools/level_board.py)"
+	@echo "  make board-demo [NOGRASP=1]   Board hold + 3-camera recording with live tilt overlay (tmux)"
 	@echo "  make demo [SCALE=..] Pose + grasp ping pong balls + gravcomp + 3-camera recording (tmux)"
 	@echo "  make rest            Fold ARM=$(ARM) to the rest pose, then torque off (keeps servos cool)"
 	@echo "  make hold | make release   Position-hold all arm motors | torque off (arm falls)"
@@ -71,6 +72,14 @@ imp:
 # Then: python tools/level_board.py --apply   (and --watch). Ctrl+C holds; then make rest ARM=both.
 board:
 	$(SSHT) "mkdir -p $(ORIN_DIR)/logs && $(GC) '$(BIN) run --arm both --scale $(SCALE) -v --listen --hold --level --stiffness $(STIFF) --assist $(ASSIST) $(if $(NOGRASP),,--grasp --object \"board edge\") --pose extended $(if $(DURATION),--duration $(DURATION)) --log logs/$(STAMP)-board-{arm}.csv'"
+
+# Board demo: window 1 records 3 cameras with a live tilt overlay; window 2 runs the board hold.
+# Ctrl+C in window 2 (arms hold), then in window 1. Videos: demo/<stamp>-board/ on the Orin (make fetch-demo).
+board-demo: free-ports
+	-tmux kill-session -t $(DEMO_SESSION) 2>/dev/null
+	tmux new-session -d -s $(DEMO_SESSION) -n record "$(SSHT) 'cd $(ORIN_DIR) && $(ORIN_PY) tools/record_cameras.py --out demo/$(STAMP)-board --overlay-board --raw --title \"XLeRobot - two-arm compliant board hold (gravity compensated)\"'; echo 'recorder exited - Enter'; read -r _"
+	tmux new-window -t $(DEMO_SESSION) -n board "$(SSHT) \"mkdir -p $(ORIN_DIR)/demo/$(STAMP)-board && $(GC) '$(BIN) run --arm both --scale $(SCALE) -v --listen --hold --level --stiffness $(STIFF) --assist $(ASSIST) $(if $(NOGRASP),,--grasp --object \\\"board edge\\\") --pose extended $(if $(DURATION),--duration $(DURATION)) --log demo/$(STAMP)-board/{arm}.csv'\"; echo 'board exited - Enter'; read -r _"
+	tmux attach -t $(DEMO_SESSION)
 
 # Open the gripper (let go of the ball) and turn its torque off.
 open:
