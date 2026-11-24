@@ -4,6 +4,7 @@
     python tools/level_board.py               # tilt report, once
     python tools/level_board.py --watch       # tilt report at 5 Hz (Ctrl+C to stop)
     python tools/level_board.py --apply       # send levelled pose goals to both arms
+    python tools/level_board.py --wait 300 --apply --watch   # demo: wait for the hold, level, keep reporting
 
 Needs `gravcomp run --arm both --listen --hold` (see `make board`). Each gripper clamps the
 board edge with its jaws closing vertically, so the board lies in the gripper's forward
@@ -126,10 +127,21 @@ def main():
     ap.add_argument("--host", default="orin.local")
     ap.add_argument("--watch", action="store_true")
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--wait", type=float, default=0.0, help="seconds to keep retrying until both arms answer")
     a = ap.parse_args()
     m = mounts()
     arms = Arms(a.host)
-    st, w = report(arms, m)
+    deadline = time.time() + a.wait
+    while True:
+        try:
+            st, w = report(arms, m)
+            break
+        except SystemExit:
+            if time.time() > deadline:
+                raise
+            time.sleep(1.0)
+    if a.apply and a.wait:
+        time.sleep(2.0)  # let the hold settle after its fade-in before levelling
     if a.apply:
         z_mean = (w["left"][2] + w["right"][2]) / 2
         for arm in PORTS:

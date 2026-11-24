@@ -133,6 +133,13 @@ Both arms hold a light board level: Cartesian position and orientation hold per 
 - **Levelling, step 1 (`--level`):** before compliance starts, each gripper is levelled in the servos' own position mode, which holds an angle to about 0.1°. A model-based Newton step on wrist_flex and wrist_roll repeats until pitch and roll are both under 0.2°. The compliant hold can't make corrections that small, because a wrist rotation also moves the tip, so shoulder, elbow and wrist all have to move at once, and all three are inside their friction dead bands.
 - **Levelling, step 2 (`tools/level_board.py --apply`):** sets both tips to their mean height and makes each gripper's board normal vertical. `--watch` reports the tilt continuously.
 
+Soft push, firm return. One fixed setting can't be both easy to push and accurate on return, because the same static friction resists both. The friction assist therefore changes with what the arm is doing:
+- **While you push** (the arm is moving, or has only just stopped), it stays low (`--assist`, 0.2 for the board).
+- **After you let go** (the arm has been still and away from its goal for 0.5 s), it ramps to `return_assist` 0.9 over 1 s, breaks through friction and returns.
+- Any motion, or getting within 1.5 mm / 0.7° of the goal, drops it back to low.
+
+The catch: if you hold the board displaced, it starts pushing back harder after about half a second.
+
 Feel. The board ties both arms together, so a push meets both position springs and both orientation springs at once, through a 30 cm lever. At full config gains (`STIFF=1`, assist 0.8) a push moved the grippers only 3–12 mm, which was too stiff to move by hand. The board defaults are `--stiffness 0.5 --assist 0.4`. Levelling happens in position mode before the hold starts, so a softer hold doesn't cost levelness at the start.
 
 Measured without a board (2026-11-24): grippers levelled to 0.13° in position mode; after the switch to the compliant hold, 0.0° on the left, 0.4–0.5° on the right, and 0.3° side to side.
@@ -144,6 +151,8 @@ make board NOGRASP=1             # board already clamped: skip opening/closing t
 python tools/level_board.py --apply   # equalize tip heights, normals vertical
 python tools/level_board.py --watch   # tilt report at 5 Hz
 make rest ARM=both
+make board-demo NOGRASP=1 DURATION=120   # tmux: 3-camera recording with live tilt overlay + board hold + auto levelling
+make fetch-demo                           # demo/<stamp>-board/{demo.mp4, head/left_wrist/right_wrist.mp4, frames.csv, left.csv, right.csv}
 ```
 
 ## Holoscan later

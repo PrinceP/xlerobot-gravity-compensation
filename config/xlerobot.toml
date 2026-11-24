@@ -131,8 +131,8 @@ return_assist = 0.9
 return_delay_s = 0.5
 return_ramp_s = 1.0
 still_radps = 0.03          # "still" = every joint slower than this
-return_err_mm = 3.0         # "away" = position error above this, or orientation error above return_err_deg
-return_err_deg = 1.0
+return_err_mm = 1.5         # "away" = position error above this, or orientation error above return_err_deg (3 left ~1 deg board tilt)
+return_err_deg = 0.7
 
 # Bus 1 (/dev/ttyACM0): left arm ids 1-6 + head 7-8. Bus 2 (/dev/ttyACM1): right arm 1-6 + wheels 7-9.
 # URDF: "right" arm has no suffix, "left" arm is "_2".
