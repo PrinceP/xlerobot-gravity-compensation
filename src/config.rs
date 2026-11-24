@@ -79,6 +79,8 @@ pub struct Gains {
     /// PWM per rad/s. Positive assists motion (cancels back-EMF), negative damps.
     pub viscous_pwm: Option<f64>,
     pub max_pwm: Option<f64>,
+    /// Measured static (break-away) friction, PWM. Sizes the impedance at-rest assist.
+    pub stiction_pwm: Option<f64>,
 }
 
 impl Gains {
@@ -92,6 +94,7 @@ impl Gains {
             friction_vel: o.friction_vel.or(self.friction_vel),
             viscous_pwm: o.viscous_pwm.or(self.viscous_pwm),
             max_pwm: o.max_pwm.or(self.max_pwm),
+            stiction_pwm: o.stiction_pwm.or(self.stiction_pwm),
         }
     }
 }
@@ -126,6 +129,7 @@ pub struct Joint {
     pub friction_vel: f64,
     pub viscous_pwm: f64,
     pub max_pwm: f64,
+    pub stiction_pwm: f64,
     pub cal: Calib,
 }
 
@@ -239,6 +243,7 @@ impl Config {
                 friction_vel: g.friction_vel.unwrap_or(0.2),
                 viscous_pwm: g.viscous_pwm.unwrap_or(0.0),
                 max_pwm: g.max_pwm.unwrap_or(400.0),
+                stiction_pwm: g.stiction_pwm.or(g.friction_pwm).unwrap_or(0.0),
                 cal: get(&j.name)?,
             });
         }

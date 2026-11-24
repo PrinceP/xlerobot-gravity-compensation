@@ -47,6 +47,9 @@ pub struct ImpCfg {
     pub max_joint_goal_speed_dps: f64,
     pub reach_m: f64,
     pub state_hz: f64,
+    /// At rest, friction assist toward the spring = assist_frac * stiction_pwm * tanh(tau / assist_tau0).
+    pub assist_frac: f64,
+    pub assist_tau0: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

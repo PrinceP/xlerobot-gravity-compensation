@@ -59,9 +59,6 @@ fn wall(j: &Joint, deg: f64, margin: f64, k: f64) -> f64 {
     }
 }
 
-/// Spring torque (N·m) at which the at-rest friction assist reaches ~76 % (tanh(1)).
-const IMP_FRICTION_TAU0: f64 = 0.15;
-
 pub struct RunOpts {
     pub scale: f64,
     pub duration: Option<f64>,
@@ -216,8 +213,9 @@ impl Loop<'_> {
                 // Coulomb feedforward in the direction of motion; at rest, in the direction the
                 // impedance spring pulls (breaks stiction toward the goal, fades out near it).
                 let mv = if j.friction_vel > 0.0 { (v_f[i] / j.friction_vel).tanh() } else { 0.0 };
-                let intent = (imp_tau[i] / IMP_FRICTION_TAU0).tanh() * (1.0 - mv.abs());
-                let fric = j.friction_pwm * (mv + intent).clamp(-1.0, 1.0);
+                let (frac, tau0) = cfg.impedance.as_ref().map_or((0.0, 1.0), |c| (c.assist_frac, c.assist_tau0));
+                let intent = (imp_tau[i] / tau0).tanh() * (1.0 - mv.abs());
+                let fric = j.friction_pwm * mv + frac * j.stiction_pwm * intent;
                 let ff = opts.scale * ramp * j.gravity_scale * j.pwm_per_nm * tau[i]
                     + fade * (j.pwm_per_nm * imp_tau[i] + fric + j.viscous_pwm * v_f[i]);
                 let w = wall(j, deg, s.limit_margin_deg, s.wall_pwm_per_deg);
