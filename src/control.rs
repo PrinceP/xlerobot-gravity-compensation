@@ -354,6 +354,25 @@ pub fn grasp_open(bus: &mut Bus, arm: &Arm, cfg: &Config) -> Result<f64> {
     Ok(pct)
 }
 
+/// Close fully with the squeeze capped by hold_torque_limit, no contact detection: for thin,
+/// soft objects (the foam board squeezes to within a few encoder steps of empty-closed, so
+/// no reliable "is something there" signal exists). The operator checks the object is in.
+pub fn grasp_close_blind(bus: &mut Bus, arm: &Arm, cfg: &Config, mut pct: f64) -> Result<()> {
+    let g = &cfg.gripper;
+    let cal = arm.gripper_cal;
+    let id = g.id;
+    bus.write_u16(id, servo::ADDR_TORQUE_LIMIT, g.hold_torque_limit)?;
+    while pct > 0.0 {
+        pct = (pct - g.close_step_pct).max(0.0);
+        bus.write_u16(id, servo::ADDR_GOAL_POSITION, cal.pct_to_raw(pct) as u16)?;
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(400));
+    let st = bus.read_state(&[id])?;
+    println!("[{}] closed blind: jaw at {:.1} %, load {} (squeeze capped at {})", arm.name, cal.raw_to_pct(st[0].pos), st[0].load, g.hold_torque_limit);
+    Ok(())
+}
+
 /// Close from `pct` until the jaws meet the object; squeeze capped by hold_torque_limit.
 /// Contact = the gripper has closed at least 5 % (the start-of-motion load spike is ignored)
 /// and either the load reaches grasp_load or the jaw lags its goal by more than 4 % (a soft

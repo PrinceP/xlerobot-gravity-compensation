@@ -100,6 +100,10 @@ enum Cmd {
         /// Soft objects (the foam board) compress and need a lower value than the ball.
         #[arg(long)]
         grasp_load: Option<i32>,
+        /// With --grasp: close fully with the squeeze cap and no contact detection (thin soft
+        /// objects such as the foam board). The operator makes sure the object is in the jaws.
+        #[arg(long)]
+        grasp_blind: bool,
         /// Stop after this many seconds.
         #[arg(long)]
         duration: Option<f64>,
@@ -340,7 +344,7 @@ fn main() -> Result<()> {
             }
         }
 
-        Cmd::Run { arm, scale, joints, pose, level, grasp, grasp_wait, grasp_load, duration, log, verbose, listen, hold, stiffness, assist, object } => {
+        Cmd::Run { arm, scale, joints, pose, level, grasp, grasp_wait, grasp_load, grasp_blind, duration, log, verbose, listen, hold, stiffness, assist, object } => {
             if !(0.0..=1.5).contains(scale) {
                 bail!("--scale must be in 0..1.5");
             }
@@ -411,7 +415,11 @@ fn main() -> Result<()> {
                         std::thread::sleep(std::time::Duration::from_millis(100));
                     }
                     for ((a, _, bus), pct) in arms.iter_mut().zip(opened) {
-                        control::grasp_close(bus, a, &cfg, object, pct)?;
+                        if *grasp_blind {
+                            control::grasp_close_blind(bus, a, &cfg, pct)?;
+                        } else {
+                            control::grasp_close(bus, a, &cfg, object, pct)?;
+                        }
                     }
                 } else {
                     for (a, _, bus) in &mut arms {
