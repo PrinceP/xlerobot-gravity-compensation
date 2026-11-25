@@ -128,8 +128,13 @@ def main():
     ap.add_argument("--raw", action="store_true", help="also write one mp4 per camera")
     ap.add_argument("--overlay-board", action="store_true", help="burn in board tilt from `gravcomp run --listen` (both arms)")
     ap.add_argument("--state-host", default="127.0.0.1")
-    ap.add_argument("--width", type=int, default=640)
+    ap.add_argument("--width", type=int, default=640, help="head camera")
     ap.add_argument("--height", type=int, default=480)
+    # The three cameras are USB 2.0 and share one 480 Mbit/s link (the Orin Nano dev kit's
+    # Type-A ports sit behind one hub). At 640x480 each, the third camera gets no frames;
+    # head 640x480 + wrists 320x240 streams all three (tested 2026-11-25).
+    ap.add_argument("--wrist-width", type=int, default=320)
+    ap.add_argument("--wrist-height", type=int, default=240)
     for k, v in CAMS.items():
         ap.add_argument(f"--{k.replace('_', '-')}", default=v)
     args = ap.parse_args()
@@ -137,13 +142,14 @@ def main():
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     devs = {"head": args.head, "left_wrist": args.left_wrist, "right_wrist": args.right_wrist}
-    cams = {k: Cam(k, d, args.width, args.height) for k, d in devs.items()}
+    size = {k: (args.width, args.height) if k == "head" else (args.wrist_width, args.wrist_height) for k in devs}
+    cams = {k: Cam(k, d, *size[k]) for k, d in devs.items()}
     for c in cams.values():
         c.start()
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     tiled = cv2.VideoWriter(str(out / "demo.mp4"), fourcc, args.fps, (1440, 540))
-    raw = {k: cv2.VideoWriter(str(out / f"{k}.mp4"), fourcc, args.fps, (args.width, args.height)) for k in cams} if args.raw else {}
+    raw = {k: cv2.VideoWriter(str(out / f"{k}.mp4"), fourcc, args.fps, size[k]) for k in cams} if args.raw else {}
     ts = open(out / "frames.csv", "w", newline="")
     tw = csv.writer(ts)
     overlay = None
@@ -176,7 +182,7 @@ def main():
         for k, w in raw.items():
             f = cams[k].frame
             if f is not None:
-                w.write(cv2.resize(f, (args.width, args.height)))
+                w.write(cv2.resize(f, size[k]))
         if r:
             tw.writerow([n, f"{now:.4f}", f"{r['side_deg']:.3f}", f"{r['left']['normal_deg']:.3f}", f"{r['right']['normal_deg']:.3f}",
                          f"{r['left']['err_mm']:.2f}", f"{r['right']['err_mm']:.2f}"])

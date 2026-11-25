@@ -92,6 +92,10 @@ enum Cmd {
         /// Open grippers, wait for the object (see --object) in each, close on it, then run.
         #[arg(long)]
         grasp: bool,
+        /// With --grasp: no Enter prompts. Open all grippers, wait this many seconds for the
+        /// object to be put in, then close all (for runs started remotely).
+        #[arg(long)]
+        grasp_wait: Option<f64>,
         /// Stop after this many seconds.
         #[arg(long)]
         duration: Option<f64>,
@@ -332,7 +336,7 @@ fn main() -> Result<()> {
             }
         }
 
-        Cmd::Run { arm, scale, joints, pose, level, grasp, duration, log, verbose, listen, hold, stiffness, assist, object } => {
+        Cmd::Run { arm, scale, joints, pose, level, grasp, grasp_wait, duration, log, verbose, listen, hold, stiffness, assist, object } => {
             if !(0.0..=1.5).contains(scale) {
                 bail!("--scale must be in 0..1.5");
             }
@@ -380,8 +384,32 @@ fn main() -> Result<()> {
                 }
             }
             if *grasp {
-                for (a, _, bus) in &mut arms {
-                    control::grasp(bus, a, &cfg, object, &wait_enter)?;
+                if let Some(wait) = grasp_wait {
+                    let mut opened = Vec::new();
+                    for (a, _, bus) in &mut arms {
+                        opened.push(control::grasp_open(bus, a, &cfg)?);
+                    }
+                    println!("Grippers open: put the {object} in. Closing in {wait:.0} s.");
+                    let t = std::time::Instant::now();
+                    let mut last = -1i64;
+                    while t.elapsed().as_secs_f64() < *wait {
+                        if stop.load(Ordering::SeqCst) {
+                            bail!("stopped before grasp");
+                        }
+                        let left = (*wait - t.elapsed().as_secs_f64()).ceil() as i64;
+                        if left != last && (left <= 5 || left % 10 == 0) {
+                            println!("  closing in {left} s");
+                            last = left;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    for ((a, _, bus), pct) in arms.iter_mut().zip(opened) {
+                        control::grasp_close(bus, a, &cfg, object, pct)?;
+                    }
+                } else {
+                    for (a, _, bus) in &mut arms {
+                        control::grasp(bus, a, &cfg, object, &wait_enter)?;
+                    }
                 }
             }
             if stop.load(Ordering::SeqCst) {

@@ -330,26 +330,36 @@ impl Loop<'_> {
 /// Open the gripper, wait for the user, close until the load says "holding".
 /// Gripper stays in position mode the whole time.
 pub fn grasp(bus: &mut Bus, arm: &Arm, cfg: &Config, object: &str, wait_enter: &dyn Fn(&str)) -> Result<()> {
+    let pct = grasp_open(bus, arm, cfg)?;
+    wait_enter(&format!("[{}] Put the {object} between the {} jaws and keep holding it, then press Enter", arm.name, arm.name));
+    grasp_close(bus, arm, cfg, object, pct)
+}
+
+/// Gripper to position mode and open slowly to `open_pct`. Returns the opening reached.
+pub fn grasp_open(bus: &mut Bus, arm: &Arm, cfg: &Config) -> Result<f64> {
     let g = &cfg.gripper;
     let cal = arm.gripper_cal;
     let id = g.id;
-    let tag = format!("[{}]", arm.name);
     let pos = bus.read_u16(id, servo::ADDR_PRESENT_POSITION)? as i32;
     bus.set_mode(id, servo::MODE_POSITION)?;
     bus.write_u16(id, servo::ADDR_GOAL_POSITION, pos as u16)?;
     bus.write_u16(id, servo::ADDR_TORQUE_LIMIT, 500)?;
     bus.set_torque(id, true)?;
-
-    // Open slowly.
     let mut pct = cal.raw_to_pct(pos);
     while (pct - g.open_pct).abs() > 0.5 {
         pct += (g.open_pct - pct).clamp(-1.0, 1.0);
         bus.write_u16(id, servo::ADDR_GOAL_POSITION, cal.pct_to_raw(pct) as u16)?;
         std::thread::sleep(Duration::from_millis(20));
     }
-    wait_enter(&format!("{tag} Put the {object} between the {} jaws and keep holding it, then press Enter", arm.name));
+    Ok(pct)
+}
 
-    // Close until load rises.
+/// Close from `pct` until the load says "holding"; squeeze capped by hold_torque_limit.
+pub fn grasp_close(bus: &mut Bus, arm: &Arm, cfg: &Config, object: &str, mut pct: f64) -> Result<()> {
+    let g = &cfg.gripper;
+    let cal = arm.gripper_cal;
+    let id = g.id;
+    let tag = format!("[{}]", arm.name);
     bus.write_u16(id, servo::ADDR_TORQUE_LIMIT, g.hold_torque_limit.max(300))?;
     loop {
         pct -= g.close_step_pct;
