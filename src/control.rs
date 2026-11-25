@@ -364,15 +364,16 @@ pub fn grasp_close(bus: &mut Bus, arm: &Arm, cfg: &Config, object: &str, mut pct
     let id = g.id;
     let tag = format!("[{}]", arm.name);
     let start = pct;
+    let (mut prev, mut still) = (pct, 0u32);
     bus.write_u16(id, servo::ADDR_TORQUE_LIMIT, g.hold_torque_limit.max(300))?;
     loop {
-        pct -= g.close_step_pct;
-        bus.write_u16(id, servo::ADDR_GOAL_POSITION, cal.pct_to_raw(pct.max(0.0)) as u16)?;
+        pct = (pct - g.close_step_pct).max(0.0);
+        bus.write_u16(id, servo::ADDR_GOAL_POSITION, cal.pct_to_raw(pct) as u16)?;
         std::thread::sleep(Duration::from_millis(20));
         let st = bus.read_state(&[id])?;
         let actual = cal.raw_to_pct(st[0].pos);
         let travelled = start - actual;
-        let lag = actual - pct.max(0.0);
+        let lag = actual - pct;
         if travelled >= 5.0 && (st[0].load.abs() >= g.grasp_load || lag > 4.0) {
             // Hold just inside the contact point, squeeze capped by the torque limit.
             let hold = actual - 1.5;
@@ -382,10 +383,22 @@ pub fn grasp_close(bus: &mut Bus, arm: &Arm, cfg: &Config, object: &str, mut pct
             println!("{tag} grasped at {actual:.1} % ({why}: load {}, lag {lag:.1} %)", st[0].load);
             return Ok(());
         }
-        if pct <= -3.0 {
-            bus.write_u16(id, servo::ADDR_TORQUE_LIMIT, g.hold_torque_limit)?;
-            bail!("{tag} gripper closed fully without feeling the {object} (at {actual:.1} %, load {})", st[0].load);
+        // Goal at fully closed: wait for the jaw to stop. A thin soft object (the foam board
+        // squeezes nearly flat) stops it short of empty-closed (~0.5 %) without a load spike.
+        if pct <= 0.0 {
+            if (actual - prev).abs() < 0.15 { still += 1 } else { still = 0 }
+            if still >= 15 {
+                bus.write_u16(id, servo::ADDR_TORQUE_LIMIT, g.hold_torque_limit)?;
+                if actual >= 1.2 {
+                    let hold = (actual - 1.5).max(0.0);
+                    bus.write_u16(id, servo::ADDR_GOAL_POSITION, cal.pct_to_raw(hold) as u16)?;
+                    println!("{tag} grasped at {actual:.1} % (jaw stopped short of closed, load {})", st[0].load);
+                    return Ok(());
+                }
+                bail!("{tag} gripper closed fully without feeling the {object} (at {actual:.1} %, load {})", st[0].load);
+            }
         }
+        prev = actual;
     }
 }
 
