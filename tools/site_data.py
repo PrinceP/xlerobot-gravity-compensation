@@ -11,6 +11,7 @@ Writes, under docs/:
 """
 import csv
 import json
+import re
 import subprocess
 import sys
 import tomllib
@@ -113,15 +114,28 @@ def main():
 
     media = DOCS / "media"
     media.mkdir(parents=True, exist_ok=True)
+    # File names carry the recording stamp: GitHub Pages lets browsers cache media for 10 min,
+    # and a re-recorded demo under the same name was served stale (the old "no signal" video).
+    video = f"board-demo-{src.name}.mp4"
+    poster = f"board-demo-{src.name}-poster.jpg"
+    for old in media.glob("board-demo*"):
+        old.unlink()
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", str(trim), "-i", str(src / "demo.mp4"), "-c:v", "libx264",
                     "-preset", "slow", "-crf", "27", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an",
-                    str(media / "board-demo.mp4")], check=True)
+                    str(media / video)], check=True)
     # Poster: a frame from the hold (default: middle of the hand interaction).
     if poster_s is None:
         poster_s = (win[0] + win[1]) / 2 if win else summary["video_s"] / 2
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", str(poster_s), "-i", str(media / "board-demo.mp4"),
-                    "-frames:v", "1", "-q:v", "4", str(media / "board-demo-poster.jpg")], check=True)
-    print("video:", media / "board-demo.mp4")
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", str(poster_s), "-i", str(media / video),
+                    "-frames:v", "1", "-q:v", "4", str(media / poster)], check=True)
+    # Point the page at the new names.
+    page = DOCS / "index.html"
+    html = page.read_text()
+    html = re.sub(r'media/board-demo[^"]*\.mp4', f"media/{video}", html)
+    html = re.sub(r'media/board-demo[^"]*-poster\.jpg', f"media/{poster}", html)
+    html = re.sub(r'data/board-demo\.json(\?v=[^"]*)?', f"data/board-demo.json?v={src.name}", html)
+    page.write_text(html)
+    print("video:", media / video)
 
 
 if __name__ == "__main__":
