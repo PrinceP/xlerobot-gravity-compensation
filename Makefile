@@ -17,11 +17,13 @@ STAMP := $(shell date +%Y%m%d-%H%M%S)
 # GitHub Pages site (docs/): regenerate chart data + web video from a board-demo recording, preview locally.
 DEMO ?= $(lastword $(sort $(wildcard demo/*-board)))
 site:
-	python3 tools/site_data.py $(DEMO)
+	python3 tools/site_data.py $(DEMO) $(if $(TRIM),--trim $(TRIM)) $(if $(POSTER),--poster $(POSTER))
+publish-blog:
+	python3 tools/publish_blog.py $(SITE) $(if $(UPDATED),--updated $(UPDATED))
 site-serve:
 	cd docs && python3 -m http.server 8000
 
-.PHONY: site site-serve help test check-model sync rust-orin build probe pose rest imp board board-demo open run demo record hold release identify free-ports fetch-demo
+.PHONY: site site-serve publish-blog help test check-model sync rust-orin build probe pose rest imp board board-demo open run demo record hold release identify free-ports fetch-demo
 
 help:
 	@echo "xlerobot-gravity-compensation"
