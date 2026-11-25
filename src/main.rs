@@ -96,6 +96,10 @@ enum Cmd {
         /// object to be put in, then close all (for runs started remotely).
         #[arg(long)]
         grasp_wait: Option<f64>,
+        /// Override [gripper] grasp_load (0.1 % units): the load that counts as "holding".
+        /// Soft objects (the foam board) compress and need a lower value than the ball.
+        #[arg(long)]
+        grasp_load: Option<i32>,
         /// Stop after this many seconds.
         #[arg(long)]
         duration: Option<f64>,
@@ -336,7 +340,7 @@ fn main() -> Result<()> {
             }
         }
 
-        Cmd::Run { arm, scale, joints, pose, level, grasp, grasp_wait, duration, log, verbose, listen, hold, stiffness, assist, object } => {
+        Cmd::Run { arm, scale, joints, pose, level, grasp, grasp_wait, grasp_load, duration, log, verbose, listen, hold, stiffness, assist, object } => {
             if !(0.0..=1.5).contains(scale) {
                 bail!("--scale must be in 0..1.5");
             }
@@ -344,6 +348,9 @@ fn main() -> Result<()> {
                 let mut c = cfg.clone();
                 if let (Some(a), Some(i)) = (assist, c.impedance.as_mut()) {
                     i.assist_frac = a.clamp(0.0, 1.0);
+                }
+                if let Some(l) = grasp_load {
+                    c.gripper.grasp_load = (*l).clamp(30, 600);
                 }
                 c
             };

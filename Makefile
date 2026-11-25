@@ -80,14 +80,14 @@ imp:
 # Two-arm board hold: both arms extend, grasp the board edge (Enter per arm), hold position + orientation.
 # Then: python tools/level_board.py --apply   (and --watch). Ctrl+C holds; then make rest ARM=both.
 board:
-	$(SSHT) "mkdir -p $(ORIN_DIR)/logs && $(GC) '$(BIN) run --arm both --scale $(SCALE) -v --listen --hold --level --stiffness $(STIFF) --assist $(ASSIST) $(if $(NOGRASP),,--grasp --object \"board edge\") --pose extended $(if $(DURATION),--duration $(DURATION)) --log logs/$(STAMP)-board-{arm}.csv'"
+	$(SSHT) "mkdir -p $(ORIN_DIR)/logs && $(GC) '$(BIN) run --arm both --scale $(SCALE) -v --listen --hold --level --stiffness $(STIFF) --assist $(ASSIST) $(if $(NOGRASP),,--grasp --grasp-load 100 --object \"board edge\") --pose extended $(if $(DURATION),--duration $(DURATION)) --log logs/$(STAMP)-board-{arm}.csv'"
 
 # Board demo: window 1 records 3 cameras with a live tilt overlay; window 2 runs the board hold.
 # Ctrl+C in window 2 (arms hold), then in window 1. Videos: demo/<stamp>-board/ on the Orin (make fetch-demo).
 board-demo: free-ports
 	-tmux kill-session -t $(DEMO_SESSION) 2>/dev/null
 	tmux new-session -d -s $(DEMO_SESSION) -n record "$(SSHT) 'cd $(ORIN_DIR) && $(ORIN_PY) tools/record_cameras.py --out demo/$(STAMP)-board --overlay-board --raw --title \"XLeRobot - two-arm compliant board hold (gravity compensated)\"'; echo 'recorder exited - Enter'; read -r _"
-	tmux new-window -t $(DEMO_SESSION) -n board "$(SSHT) \"mkdir -p $(ORIN_DIR)/demo/$(STAMP)-board && $(GC) '$(BIN) run --arm both --scale $(SCALE) -v --listen --hold --level --stiffness $(STIFF) --assist $(ASSIST) $(if $(NOGRASP),,--grasp --object \\\"board edge\\\") --pose extended $(if $(DURATION),--duration $(DURATION)) --log demo/$(STAMP)-board/{arm}.csv'\"; echo 'board exited - Enter'; read -r _"
+	tmux new-window -t $(DEMO_SESSION) -n board "$(SSHT) \"mkdir -p $(ORIN_DIR)/demo/$(STAMP)-board && $(GC) '$(BIN) run --arm both --scale $(SCALE) -v --listen --hold --level --stiffness $(STIFF) --assist $(ASSIST) $(if $(NOGRASP),,--grasp --grasp-load 100 --object \\\"board edge\\\") --pose extended $(if $(DURATION),--duration $(DURATION)) --log demo/$(STAMP)-board/{arm}.csv'\"; echo 'board exited - Enter'; read -r _"
 	tmux new-window -t $(DEMO_SESSION) -n level "python3 tools/level_board.py --host $(ORIN_HOST) --wait 300 --apply --watch; echo 'level exited - Enter'; read -r _"
 	tmux select-window -t $(DEMO_SESSION):board
 	tmux attach -t $(DEMO_SESSION)
